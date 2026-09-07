@@ -1,0 +1,159 @@
+const prefixPaths = (prefix: string, paths: string[]) => paths.map((path) => `${prefix}.${path}`);
+const unique = (paths: string[]) => Array.from(new Set(paths));
+
+export const DISCORD_EVENTS = [
+    "order.placed",
+    "order.completed",
+    "order.canceled",
+    "order.updated",
+    "order.fulfillment_created",
+    "fulfillment.created",
+    "fulfillment.shipment_created",
+    "fulfillment.delivery_created",
+    "customer.created",
+    "customer.updated",
+    "return.created",
+    "return.received",
+    "claim.created",
+    "exchange.created",
+];
+
+/**
+ * Events the subscriber actually handles. Mappings for other events
+ * are accepted (forward-compat) but will never fire until the subscriber
+ * subscribes to them.
+ */
+export const SUPPORTED_DISCORD_EVENTS = [
+    "order.placed",
+    "order.completed",
+    "order.canceled",
+    "order.updated",
+    "order.fulfillment_created",
+    "fulfillment.created",
+    "fulfillment.shipment_created",
+    "shipment.created",
+    "customer.created",
+    "customer.updated",
+    "payment.captured",
+    "payment.refunded",
+] as const
+
+const WEBHOOK_RE =
+    /^https:\/\/discord\.com\/api\/webhooks\/\d+\/[A-Za-z0-9_-]+$/
+const WEBHOOK_RE_LEGACY =
+    /^https:\/\/discordapp\.com\/api\/webhooks\/\d+\/[A-Za-z0-9_-]+$/
+
+export function normalizeWebhookUrl(url: string): string {
+    return (url || "").trim().replace(/\/+$/, "")
+}
+
+export function isValidWebhookUrl(url: string): boolean {
+    const normalized = normalizeWebhookUrl(url)
+    if (!normalized || normalized.length > 500) {
+        return false
+    }
+    return WEBHOOK_RE.test(normalized) || WEBHOOK_RE_LEGACY.test(normalized)
+}
+
+/** Medusa money fields are integer minor units; Discord display needs major units. */
+export function toMajorUnits(minor: number): number {
+    if (!Number.isFinite(minor)) return 0;
+    return minor / 100;
+}
+
+const currencyFormatterCache = new Map<string, Intl.NumberFormat>();
+export function getCurrencyFormatter(currencyCode: unknown): Intl.NumberFormat {
+    const raw = typeof currencyCode === "string" && currencyCode.trim() ? currencyCode.trim().toUpperCase() : "USD";
+    const cached = currencyFormatterCache.get(raw);
+    if (cached) return cached;
+    let formatter: Intl.NumberFormat;
+    try {
+        formatter = new Intl.NumberFormat("en-US", { style: "currency", currency: raw });
+    } catch {
+        formatter = new Intl.NumberFormat("en-US");
+    }
+    currencyFormatterCache.set(raw, formatter);
+    return formatter;
+}
+
+/** Escape Discord markdown + neutralize @everyone/@here pings from user-controlled data. */
+export function discordEscape(value: unknown): string {
+    const str = value === undefined || value === null ? "" : String(value);
+    return str
+        .replace(/@(everyone|here)/gi, "@\u200b$1")
+        .replace(/([\\*_`~\[\]()])/g, "\\$1");
+}
+
+export const ORDER_FIELDS = [
+    "id",
+    "display_id",
+    "status",
+    "total",
+    "subtotal",
+    "currency_code",
+    "email",
+    "shipping_address.first_name",
+    "shipping_address.last_name",
+    "shipping_address.phone",
+    "shipping_address.city",
+    "billing_address.first_name",
+    "billing_address.last_name",
+    "billing_address.phone",
+    "customer.first_name",
+    "customer.last_name",
+    "customer.email",
+    "customer.phone",
+    "payment_status",
+    "fulfillment_status",
+    "shipment_status",
+    "tracking_numbers",
+    "tracking_links",
+];
+
+export const CUSTOMER_FIELDS = [
+    "id",
+    "email",
+    "first_name",
+    "last_name",
+    "phone",
+];
+
+export const FULFILLMENT_FIELDS = [
+    "id",
+    "tracking_numbers",
+    "provider_id",
+];
+
+export const RETURN_FIELDS = [
+    "id",
+    "status",
+    "order_id",
+];
+
+export function getSuggestedDataPathsForEvent(eventName: string): string[] {
+    if (eventName.startsWith("order."))
+        return ORDER_FIELDS;
+    if (eventName.startsWith("customer."))
+        return CUSTOMER_FIELDS;
+    if (eventName.startsWith("fulfillment.")) {
+        return unique([
+            ...FULFILLMENT_FIELDS,
+            ...prefixPaths("order", ORDER_FIELDS),
+        ]);
+    }
+    if (eventName.startsWith("return.")) {
+        return unique([
+            ...RETURN_FIELDS,
+            ...prefixPaths("order", ORDER_FIELDS),
+        ]);
+    }
+    if (eventName.startsWith("claim.") || eventName.startsWith("exchange.")) {
+        return unique([
+            "id",
+            "type",
+            "order_id",
+            ...prefixPaths("order", ORDER_FIELDS),
+        ]);
+    }
+    return ORDER_FIELDS;
+}
