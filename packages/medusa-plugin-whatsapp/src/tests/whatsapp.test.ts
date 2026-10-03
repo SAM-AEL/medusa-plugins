@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { normalizePhoneToE164, normalizeTemplateVariables } from "../shared/http"
+import { maskPhone, normalizePhoneToE164, normalizeTemplateVariables } from "../shared/http"
 import { redactSensitiveObject } from "../shared/log-policy"
 import { resolveDataPath } from "../shared/whatsapp-runtime"
 
@@ -19,6 +19,27 @@ test("WhatsApp Phone Normalization: E.164 Strict Parsing", () => {
     assert.equal(normalizePhoneToE164("abc1234567890"), null, "Alphabetic characters rejected")
     assert.equal(normalizePhoneToE164(""), null, "Empty string rejected")
     assert.equal(normalizePhoneToE164(null), null, "Null rejected")
+})
+
+test("WhatsApp Phone Masking: subscriber digits are never leaked", () => {
+    // The country prefix and last 4 digits are preserved for operator usability.
+    assert.equal(maskPhone("+919876543210"), "+91 ****** 3210")
+    assert.equal(maskPhone("+1 5551234567"), "+1 ****** 4567")
+
+    // The critical property: no more than the last 4 digits survive, and the
+    // middle of the number is always replaced.
+    assert.ok(!maskPhone("+919876543210").includes("98765"), "leading subscriber digits must be masked")
+    assert.ok(!maskPhone("919876543210").includes("9876543"), "leading subscriber digits must be masked")
+
+    // Degenerate / hostile inputs must not throw or leak structure.
+    assert.equal(maskPhone(""), "")
+    assert.equal(maskPhone(null), "")
+    assert.equal(maskPhone(undefined), "")
+    assert.equal(maskPhone(1234567890), "", "non-string input rejected")
+
+    // Short values are fully starred rather than partially revealed.
+    const short = maskPhone("+9112")
+    assert.ok(!short.includes("12"), "short numbers must not reveal trailing digits")
 })
 
 test("WhatsApp Log Redaction Policy: Sensitive Keys Masking", () => {

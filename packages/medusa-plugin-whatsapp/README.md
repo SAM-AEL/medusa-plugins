@@ -133,7 +133,7 @@ All admin routes require an authenticated Medusa admin user session.
 | `POST` | `/admin/whatsapp/config` | Updates non-sensitive configuration parameters. |
 | `GET` | `/admin/whatsapp/templates` | Queries Meta Graph API to fetch approved WhatsApp templates and their parameter definitions. |
 | `GET` | `/admin/whatsapp/mappings` | Lists configured event-to-template mappings. |
-| `POST` | `/admin/whatsapp/mappings` | Creates a new event mapping (validated via Zod). |
+| `POST` | `/admin/whatsapp/mappings` | Creates a new event mapping (validated inline). |
 | `POST` | `/admin/whatsapp/mappings/:id` | Updates an existing event mapping. |
 | `DELETE` | `/admin/whatsapp/mappings/:id` | Deletes an event mapping. |
 | `GET` | `/admin/whatsapp/logs` | Fetches historical message transmission logs with PII automatically redacted. |

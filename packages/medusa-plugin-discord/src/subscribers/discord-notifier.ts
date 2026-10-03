@@ -357,7 +357,9 @@ export default async function discordNotificationHandler({
                             body: JSON.stringify(finalPayload),
                         })
                     } catch (e) {
-                        logger.error(`Error sending customer notification to ${mapping.webhook_url}: ${e}`)
+                        // Never log mapping.webhook_url — a Discord webhook URL IS the credential.
+                        // Log the channel name instead, matching the delivery-failure path below.
+                        logger.error(`Error sending customer notification to ${mapping.channel_name || "unnamed"}: ${e}`)
                     }
                 })
             )

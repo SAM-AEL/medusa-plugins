@@ -1,5 +1,5 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
-import { ok, parsePagination } from "../../../../shared/http"
+import { maskPhone, ok, parsePagination } from "../../../../shared/http"
 import { redactSensitiveObject } from "../../../../shared/log-policy"
 
 const WHATSAPP_MODULE = "whatsapp"
@@ -25,8 +25,13 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         }
     )
 
+    // Mask recipient_phone at the API boundary. The raw value stays in the DB so
+    // the `?q=` search filter above keeps working, but it is never returned to
+    // the browser. redactSensitiveObject() only walks nested payload objects,
+    // so it does not cover this top-level column.
     const sanitizedLogs = (logs || []).map((entry: Record<string, unknown>) => ({
         ...entry,
+        recipient_phone: maskPhone(entry.recipient_phone),
         request_payload: redactSensitiveObject(entry.request_payload),
         response_payload: redactSensitiveObject(entry.response_payload),
     }))

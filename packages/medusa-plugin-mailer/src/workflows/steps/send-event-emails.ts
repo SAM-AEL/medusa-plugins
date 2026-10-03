@@ -99,13 +99,13 @@ export const sendEventEmailsStep = createStep<
                     logger.warn(
                         `[Mailer] No email found for event ${input.event_name} (recipient_type: ${mapping.recipient_type})`
                     )
-                    return runNext()
+                    return
                 }
 
                 if (!isValidEmail(recipientEmail)) {
                     skipped += 1
                     logger.warn(`[Mailer] Invalid recipient email for event ${input.event_name}`)
-                    return runNext()
+                    return
                 }
 
                 let templateVars: Record<string, string> = {}
@@ -144,7 +144,7 @@ export const sendEventEmailsStep = createStep<
                     logger.error(
                         `[Mailer] Template not found or invalid for event ${input.event_name}: ${mapping.template_name}`
                     )
-                    return runNext()
+                    return
                 }
 
                 const rawIdx = Number(mapping.sender_index ?? 1)
@@ -161,7 +161,7 @@ export const sendEventEmailsStep = createStep<
                 if (!isValidEmail(fromAddress)) {
                     skipped += 1
                     logger.error(`[Mailer] Sender address misconfigured for event ${input.event_name}`)
-                    return runNext()
+                    return
                 }
                 const maskedRecipient = recipientEmail.replace(/^(.).*(@.*)$/, "$1***$2")
                 const info: any = await transporter.sendMail({
@@ -188,6 +188,9 @@ export const sendEventEmailsStep = createStep<
                     `[Mailer] Error sending email for event ${input.event_name}: ${err instanceof Error ? err.message : "unknown"}`
                 )
             } finally {
+                // Single dispatch point for the worker chain. Early exits above use a bare
+                // `return` (NOT `return runNext()`), otherwise every skip path would spawn
+                // two workers and silently defeat the MAILER_SEND_CONCURRENCY cap.
                 await runNext()
             }
         }

@@ -144,7 +144,7 @@ All admin endpoints require an authenticated Medusa admin user session.
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/admin/discord/mappings` | List all configured webhook mappings. |
-| `POST` | `/admin/discord/mappings` | Create a new webhook mapping (validated via Zod). |
+| `POST` | `/admin/discord/mappings` | Create a new webhook mapping (validated against a Discord webhook URL allowlist). |
 | `POST` | `/admin/discord/mappings/:id` | Update an existing webhook mapping. |
 | `DELETE` | `/admin/discord/mappings/:id` | Delete a webhook mapping. |
 | `POST` | `/admin/discord/test` | Dispatch a test notification with synthetic order data to verify webhook connectivity. |
@@ -181,7 +181,7 @@ The following tokens can be used in the `message_template` field:
 
 - **Mention Hijacking Defense:** Customer-submitted data (names, notes, addresses) is sanitized to neutralize `@everyone`, `@here`, `<@...>`, and `<@&...>` mentions, preventing malicious users from tagging channel members.
 - **Webhook URL Protocol Validation:** Webhook targets are strictly validated against `https://discord.com/api/webhooks/` (or `https://discordapp.com/api/webhooks/`), rejecting insecure HTTP schemes and arbitrary external URLs.
-- **Input Validation via Zod:** All admin API endpoints enforce strict schema validation for request payloads.
+- **Input Validation:** All admin API endpoints validate request payloads inline. Webhook URLs are checked against an allowlist that only permits `https://discord.com/api/webhooks/{id}/{token}` (and the legacy `discordapp.com` host), which blocks SSRF via arbitrary URLs.
 - **Dual Error Envelope Normalization:** The Admin UI extension handles both structured API errors (`{ message, error, code }`) and Medusa framework errors (`{ type, message }`) with graceful fallback messages.
 - **Database Index Optimization:** Composite indexes (`idx_discord_order_msg_lookup`, `idx_discord_order_msg_webhook_url`, `idx_discord_mapping_webhook_url`) optimize message lookup performance under high order volume.
 

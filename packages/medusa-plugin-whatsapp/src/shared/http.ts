@@ -62,6 +62,65 @@ export function normalizePhoneToE164(value: unknown): string | null {
   return digits
 }
 
+/**
+ * Valid E.164 country calling codes (1-3 digits). Used by maskPhone() to work
+ * out how much of the leading digits are the country/area prefix so that only
+ * that prefix and the final 4 digits survive masking.
+ */
+const COUNTRY_CALLING_CODES = new Set([
+  "1", "7", "20", "27", "30", "31", "32", "33", "34", "36", "39", "40", "41", "43", "44", "45",
+  "46", "47", "48", "49", "51", "52", "53", "54", "55", "56", "57", "58", "60", "61", "62", "63",
+  "64", "65", "66", "81", "82", "84", "86", "90", "91", "92", "93", "94", "95", "98",
+  "211", "212", "213", "216", "218", "220", "233", "234", "251", "254", "255", "256",
+  "260", "263", "297", "298", "299", "350", "351", "352", "353", "354", "355", "356",
+  "357", "358", "359", "370", "371", "372", "380", "381", "385", "386", "387", "389",
+  "420", "421", "423", "500", "501", "502", "503", "504", "505", "506", "507", "508",
+  "509", "590", "591", "592", "593", "595", "597", "598", "599", "670", "672", "673",
+  "674", "675", "676", "677", "678", "679", "680", "681", "682", "683", "685", "686",
+  "687", "688", "689", "690", "691", "692", "850", "852", "853", "855", "856", "880",
+  "886", "960", "961", "962", "963", "964", "965", "966", "967", "968", "970", "971",
+  "972", "973", "974", "975", "976", "977", "992", "993", "994", "995", "996", "998",
+])
+
+/**
+ * Mask a phone number for display/logging, preserving the country calling code
+ * and the final 4 digits. Matches the format documented in the README, e.g.
+ * "+91 98765 43210" -> "+91 ****** 3210".
+ *
+ * The subscriber digits are always replaced, so the raw number is never
+ * returned. Safe to use on API responses.
+ */
+export function maskPhone(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) {
+    return ""
+  }
+  const digits = value.replace(/\D/g, "")
+  if (!digits) {
+    return ""
+  }
+
+  // Determine the longest valid country calling code (1-3 digits) as the prefix.
+  let prefixLen = 0
+  for (const len of [3, 2, 1]) {
+    if (digits.length > len && COUNTRY_CALLING_CODES.has(digits.slice(0, len))) {
+      prefixLen = len
+      break
+    }
+  }
+
+  const hasPlus = value.trim().startsWith("+")
+  const prefix = hasPlus ? `+${digits.slice(0, prefixLen)}` : digits.slice(0, prefixLen)
+  const separator = prefix ? " " : ""
+  const subscriber = digits.slice(prefixLen)
+
+  // Too short to mask meaningfully — fully star it rather than reveal digits.
+  if (subscriber.length <= 4) {
+    return `${prefix}${separator}${"*".repeat(Math.max(subscriber.length, 1))}`
+  }
+
+  return `${prefix}${separator}${"*".repeat(6)} ${subscriber.slice(-4)}`
+}
+
 export function isLikelyPhone(value: unknown): value is string {
   return normalizePhoneToE164(value) !== null
 }

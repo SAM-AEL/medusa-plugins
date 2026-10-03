@@ -159,14 +159,14 @@ The plugin listens for the following Medusa event patterns:
 
 ### Admin API Endpoints
 
-All endpoints require an authenticated Medusa admin user session.
+All endpoints require an authenticated Medusa admin principal. These routes do not declare their own `middlewares.ts`, so they rely on the Medusa framework default of authenticating every route that does not explicitly opt out (`AUTHENTICATE = false`). Both admin **session cookies** and admin **API keys** are accepted.
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/admin/mailer/config` | Returns SMTP configuration status and configured sender profiles. |
 | `GET` | `/admin/mailer/templates` | Lists available `.html` templates and detects declared placeholder tokens. |
 | `GET` | `/admin/mailer/mappings` | Retrieves all event-to-template mappings. |
-| `POST` | `/admin/mailer/mappings` | Creates a new event-to-template mapping (validated via Zod). |
+| `POST` | `/admin/mailer/mappings` | Creates a new event-to-template mapping (validated inline). |
 | `POST` | `/admin/mailer/mappings/:id` | Updates an existing mapping configuration. |
 | `DELETE` | `/admin/mailer/mappings/:id` | Deletes a mapping. |
 | `POST` | `/admin/mailer/send` | Dispatches an ad-hoc test email to verify SMTP and template rendering. |
@@ -201,8 +201,8 @@ Operators map template keys to object paths on the event entity. For example:
 
 - **Directory Traversal Protection:** Custom templates requested via `MAILER_TEMPLATES_DIR` are normalized using `path.resolve` and verified against the base directory to prevent `../` directory escapes.
 - **Prototype Pollution Prevention:** Nested property path traversal explicitly excludes `__proto__`, `constructor`, and `prototype` property keys.
-- **HTML & XSS Sanitization:** Values interpolated into HTML templates are sanitized against malicious script tags and HTML injection.
-- **Strict URL Protocol Filtering:** Links interpolated into templates are restricted to `http:`, `https:`, and `mailto:` protocols.
+- **HTML & XSS Sanitization:** Values interpolated into HTML templates are HTML-escaped, so customer-supplied data cannot inject markup or script tags.
+- **Strict URL Protocol Filtering:** Links interpolated into templates are restricted to the `http:` and `https:` protocols.
 - **Header Injection Defense:** Recipient email addresses and subject lines are stripped of carriage returns (`\r`) and newlines (`\n`).
 - **Resilient Degraded Mode:** If SMTP credentials are missing or incomplete, the plugin logs a warning and gracefully skips dispatch rather than crashing the process or blocking order completion.
 
