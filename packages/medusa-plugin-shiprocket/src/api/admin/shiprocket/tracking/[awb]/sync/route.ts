@@ -177,7 +177,12 @@ export const POST = async (req: AuthenticatedMedusaRequest, res: MedusaResponse)
         }
     } catch (error: any) {
         const logger = req.scope.resolve("logger")
-        logger.error(`Admin tracking sync error: ${error.message}`, error)
+        // Log message only. Passing the raw error object risks dumping an axios
+        // error whose `config.data` holds the Shiprocket login body (email/password)
+        // and whose `config.headers` holds the bearer token.
+        logger.error(
+            `Admin tracking sync error: ${error instanceof Error ? error.message : "unknown error"}`
+        )
 
         return fail(res, 500, "SYNC_FAILED", error.message || "Failed to sync tracking data")
     }

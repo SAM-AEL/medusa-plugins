@@ -25,13 +25,26 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         }
     )
 
-    // Mask recipient_phone at the API boundary. The raw value stays in the DB so
+    // WhatsApp wamids are base64 protobuf blobs that embed the recipient phone
+// number. Decoding one recovers the full number, so it must be truncated
+// before it leaves the server. The raw column stays in the DB so operators can
+// still correlate against Meta's delivery receipts.
+function redactWamid(value: unknown): string | null {
+    if (typeof value !== "string" || !value) {
+        return null
+    }
+    // Keep only a short prefix/suffix fingerprint for identification.
+    return value.length <= 16 ? "…" : `${value.slice(0, 8)}…${value.slice(-4)}`
+}
+
+// Mask recipient_phone at the API boundary. The raw value stays in the DB so
     // the `?q=` search filter above keeps working, but it is never returned to
     // the browser. redactSensitiveObject() only walks nested payload objects,
-    // so it does not cover this top-level column.
+    // so it does not cover these top-level columns.
     const sanitizedLogs = (logs || []).map((entry: Record<string, unknown>) => ({
         ...entry,
         recipient_phone: maskPhone(entry.recipient_phone),
+        wa_message_id: redactWamid(entry.wa_message_id),
         request_payload: redactSensitiveObject(entry.request_payload),
         response_payload: redactSensitiveObject(entry.response_payload),
     }))

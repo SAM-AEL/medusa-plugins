@@ -63,7 +63,10 @@ export const POST = async (req: AuthenticatedMedusaRequest, res: MedusaResponse)
         }
     } catch (error: any) {
         const logger = req.scope.resolve("logger")
-        logger.error(`Admin pickup schedule error: ${error.message}`, error)
+        // Log message only — the raw error may carry axios config with credentials.
+        logger.error(
+            `Admin pickup schedule error: ${error instanceof Error ? error.message : "unknown error"}`
+        )
         return fail(res, 500, "INTERNAL_ERROR", error.message || "Failed to schedule pickup")
     }
 }

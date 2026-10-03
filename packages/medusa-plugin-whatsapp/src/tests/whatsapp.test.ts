@@ -40,6 +40,10 @@ test("WhatsApp Phone Masking: subscriber digits are never leaked", () => {
     // Short values are fully starred rather than partially revealed.
     const short = maskPhone("+9112")
     assert.ok(!short.includes("12"), "short numbers must not reveal trailing digits")
+
+    // Degenerate inputs must not produce a bare "+" with no country code.
+    assert.ok(!maskPhone("+").startsWith("+"), "a lone plus must not be emitted")
+    assert.ok(!maskPhone("+1").startsWith("+ "), "no country code means no bare plus prefix")
 })
 
 test("WhatsApp Log Redaction Policy: Sensitive Keys Masking", () => {

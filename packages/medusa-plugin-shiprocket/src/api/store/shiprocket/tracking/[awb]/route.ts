@@ -81,7 +81,10 @@ export const GET = async (req: AuthenticatedMedusaRequest, res: MedusaResponse) 
         }, 200)
     } catch (error: any) {
         const logger = req.scope.resolve("logger")
-        logger.error(`Tracking API error: ${error.message}`, error)
+        // Log message only — the raw error may carry axios config with credentials.
+        logger.error(
+            `Tracking API error: ${error instanceof Error ? error.message : "unknown error"}`
+        )
         return fail(res, 500, "INTERNAL_ERROR", "Internal server error")
     }
 }

@@ -20,7 +20,12 @@ export default async function refreshShiprocketTokenJob(container: MedusaContain
         await manager.forceRefreshToken()
         logger.info("Shiprocket token refreshed successfully via scheduled job")
     } catch (err: any) {
-        logger.error(`Failed to refresh Shiprocket token: ${err.message}`, err)
+        // Log message only. Passing the raw error object risks dumping an axios
+        // error whose `config.data` holds the Shiprocket login body (email/password)
+        // and whose `config.headers` holds the bearer token.
+        logger.error(
+            `Failed to refresh Shiprocket token: ${err instanceof Error ? err.message : "unknown error"}`
+        )
     }
 }
 

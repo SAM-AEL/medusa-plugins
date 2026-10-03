@@ -109,7 +109,9 @@ export function maskPhone(value: unknown): string {
   }
 
   const hasPlus = value.trim().startsWith("+")
-  const prefix = hasPlus ? `+${digits.slice(0, prefixLen)}` : digits.slice(0, prefixLen)
+  // Only emit a "+" prefix when an actual country code was identified,
+  // otherwise "+" alone would be meaningless.
+  const prefix = hasPlus && prefixLen > 0 ? `+${digits.slice(0, prefixLen)}` : hasPlus ? "" : digits.slice(0, prefixLen)
   const separator = prefix ? " " : ""
   const subscriber = digits.slice(prefixLen)
 
