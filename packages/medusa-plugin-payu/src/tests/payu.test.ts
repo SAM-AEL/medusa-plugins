@@ -3,9 +3,121 @@ import assert from "node:assert/strict"
 import { PayuClient, generateTxnId } from "../providers/payu/client"
 import { sanitizeIndianPhone, isValidIndianPhone } from "../providers/payu/phone-utils"
 import { isRetryablePayuStatus } from "../providers/payu/config"
+import { verifyCaptureEligibility } from "../providers/payu/capture-verification"
 
 const TEST_KEY = "test_merchant_key_123"
 const TEST_SALT = "test_merchant_salt_456"
+
+test("PayU Capture: rejects a settled amount below the session amount", () => {
+    // Session (authoritative, DB-backed) expects 5000.00 but PayU only settled
+    // 1.00. This is the underpayment scenario and must never be capturable.
+    const verdict = verifyCaptureEligibility(
+        { status: 1, transaction_details: { T_ATTACK: { status: "success", amt: "1.00" } } } as any,
+        "T_ATTACK",
+        "5000.00"
+    )
+    assert.equal(verdict.ok, false)
+    assert.match(verdict.reason!, /lower than the payment session amount/)
+})
+
+test("PayU Capture: rejects when PayU does not report success", () => {
+    const verdict = verifyCaptureEligibility(
+        { status: 1, transaction_details: { T_PENDING: { status: "pending", amt: "500.00" } } } as any,
+        "T_PENDING",
+        "500.00"
+    )
+    assert.equal(verdict.ok, false)
+    assert.match(verdict.reason!, /status "pending"/)
+})
+
+test("PayU Capture: rejects an unconfirmed txnid (cross-session attack)", () => {
+    // An attacker pointing their session at someone else's txnid: the verify
+    // API knows nothing about it, so it must not capture.
+    const verdict = verifyCaptureEligibility({ status: 1, transaction_details: {} } as any, "T_VICTIM", "500.00")
+    assert.equal(verdict.ok, false)
+    assert.match(verdict.reason!, /status "unknown"/)
+})
+
+test("PayU Capture: rejects when the gateway does not confirm at all", () => {
+    const verdict = verifyCaptureEligibility({ status: 0, transaction_details: {} } as any, "T_X", "500.00")
+    assert.equal(verdict.ok, false)
+    assert.match(verdict.reason!, /did not confirm/)
+
+    assert.equal(verifyCaptureEligibility(null, "T_X", "500.00").ok, false, "null response fails closed")
+    assert.equal(verifyCaptureEligibility(undefined, "T_X", "500.00").ok, false, "undefined response fails closed")
+})
+
+test("PayU Capture: rejects a session with no txnid (fails closed)", () => {
+    const verdict = verifyCaptureEligibility({ status: 1, transaction_details: {} } as any, undefined, "500.00")
+    assert.equal(verdict.ok, false)
+    assert.match(verdict.reason!, /missing its PayU transaction id/)
+})
+
+test("PayU Capture: rejects non-numeric amounts rather than defaulting", () => {
+    const verdict = verifyCaptureEligibility(
+        { status: 1, transaction_details: { T_N: { status: "success", amt: "not-a-number" } } } as any,
+        "T_N",
+        "500.00"
+    )
+    assert.equal(verdict.ok, false)
+    assert.match(verdict.reason!, /unable to compare/)
+})
+
+test("PayU Capture: accepts an exactly settled amount", () => {
+    const verdict = verifyCaptureEligibility(
+        { status: 1, transaction_details: { T_GOOD: { status: "success", amt: "500.00", mihpayid: "M3", bank_ref_num: "BR3", mode: "CC" } } } as any,
+        "T_GOOD",
+        "500.00"
+    )
+    assert.equal(verdict.ok, true)
+    assert.equal(verdict.bankRefNum, "BR3")
+    assert.equal(verdict.payuTransactionId, "M3")
+})
+
+test("PayU Capture: accepts an overpayment", () => {
+    const verdict = verifyCaptureEligibility(
+        { status: 1, transaction_details: { T_OVER: { status: "success", amt: "600.00" } } } as any,
+        "T_OVER",
+        "500.00"
+    )
+    assert.equal(verdict.ok, true, "paying more than the session amount is fine")
+})
+
+test("PayU Capture: rounds to whole paise so float drift cannot underpay", () => {
+    // 499.999 rounds UP to 50000 paise, i.e. exactly the session amount. Sub-paise
+    // noise must not be treated as an underpayment.
+    const roundsUp = verifyCaptureEligibility(
+        { status: 1, transaction_details: { T_DRIFT: { status: "success", amt: "499.999" } } } as any,
+        "T_DRIFT",
+        "500.00"
+    )
+    assert.equal(roundsUp.ok, true, "sub-paise drift must not count as an underpayment")
+
+    // A genuine half-rupee shortfall must still be rejected.
+    const genuineShortfall = verifyCaptureEligibility(
+        { status: 1, transaction_details: { T_SHORT: { status: "success", amt: "499.49" } } } as any,
+        "T_SHORT",
+        "500.00"
+    )
+    assert.equal(genuineShortfall.ok, false, "a real shortfall of 51 paise must be rejected")
+})
+
+test("PayU Capture: ignores an amount supplied for a different txnid", () => {
+    // The session amount must be compared against ITS OWN txnid, never one the
+    // attacker controls.
+    const verdict = verifyCaptureEligibility(
+        {
+            status: 1,
+            transaction_details: {
+                T_MINE: { status: "success", amt: "1.00" },
+                T_OTHER: { status: "success", amt: "99999.00" },
+            },
+        } as any,
+        "T_MINE",
+        "500.00"
+    )
+    assert.equal(verdict.ok, false, "must compare against the session's own txnid")
+})
 
 test("PayU Client: Transaction ID Generation", () => {
     for (let i = 0; i < 50; i++) {

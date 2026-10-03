@@ -4,6 +4,19 @@
  */
 
 /**
+ * Result of verifying a payment against the PayU verify API.
+ * `ok: false` carries a human-readable `reason` describing why the payment
+ * must not be treated as captured.
+ */
+export interface PayuCaptureVerification {
+    ok: boolean
+    reason?: string
+    payuTransactionId?: string
+    paymentMode?: string
+    bankRefNum?: string
+}
+
+/**
  * PayU Provider Configuration
  */
 export interface PayuProviderConfig {

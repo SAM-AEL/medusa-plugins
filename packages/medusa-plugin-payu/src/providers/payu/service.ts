@@ -37,6 +37,7 @@ import type {
 
 import type { PayuProviderConfig, PayuSessionData, PayuWebhookPayload, PayuPaymentStatus } from "./types"
 import { PayuClient, generateTxnId } from "./client"
+import { verifyCaptureEligibility } from "./capture-verification"
 import { sanitizeIndianPhone } from "./phone-utils"
 import crypto from "crypto"
 
@@ -210,10 +211,19 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
             const customer = context?.customer
             const inputData = input.data as Record<string, unknown> | undefined
 
-            // CRITICAL: Medusa passes session_id via input.data.session_id
-            // We must store this and pass it through PayU (via udf3) so webhooks
-            // can return it to Medusa's processPaymentWorkflow
-            const sessionId = (inputData?.session_id as string) || ""
+            // Medusa passes the session_id via input.data.session_id, which we echo back in
+            // udf3 so webhooks can be correlated back to the payment session.
+            // The value originates from the caller, so validate its shape: a
+            // non-UUID here would later be trusted as a session identifier.
+            // Fail closed rather than silently proceeding with a bogus value.
+            const rawSessionId = (inputData?.session_id as string) || ""
+            if (rawSessionId && !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(rawSessionId)) {
+                throw new MedusaError(
+                    MedusaError.Types.INVALID_DATA,
+                    "Invalid payment session_id: expected a UUID"
+                )
+            }
+            const sessionId = rawSessionId
 
             // Fallback chain: customer data -> input data (passed from frontend)
             // MedusaJS may not always populate the full customer context
@@ -409,7 +419,19 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
     }
 
     /**
-     * Capture payment (PayU auto-captures; verify before flipping local state)
+     * Capture payment.
+     *
+     * PayU auto-captures at the gateway, but that is not sufficient reason to
+     * trust our local state: this method previously flipped `status` to
+     * "captured" without contacting PayU at all. Combined with a webhook-supplied
+     * capture amount, that allowed an underpayment to be recorded as a
+     * successful capture.
+     *
+     * We therefore re-verify against the PayU verify API before marking
+     * captured. `input.data` here is the payment session's stored data, so
+     * `txnid` and `amount` are values recorded at initiatePayment rather than
+     * webhook input. Comparing the two binds the capture to the session it
+     * actually belongs to.
      */
     async capturePayment(input: CapturePaymentInput): Promise<CapturePaymentOutput> {
         const sessionData = input.data as unknown as PayuSessionData
@@ -424,8 +446,37 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
                 `Cannot capture payment in status "${sessionData.status}"`
             )
         }
+
+        if (!sessionData.txnid) {
+            throw new MedusaError(
+                MedusaError.Types.NOT_ALLOWED,
+                "Cannot capture payment: session is missing its PayU transaction id"
+            )
+        }
+
+        // Ask the gateway what actually happened to this transaction, then decide
+        // eligibility with the shared (unit-tested) helper.
+        const verifyResponse = await this.client_.verifyPayment(sessionData.txnid)
+        const verdict = verifyCaptureEligibility(verifyResponse, sessionData.txnid, sessionData.amount)
+
+        if (!verdict.ok) {
+            this.logger_?.warn?.(
+                `[PayU capture] refused for txnid=${sessionData.txnid}: ${verdict.reason}`
+            )
+            throw new MedusaError(
+                MedusaError.Types.NOT_ALLOWED,
+                `Cannot capture payment: ${verdict.reason}`
+            )
+        }
+
         return {
-            data: { ...sessionData, status: "captured" as PayuPaymentStatus } as unknown as Record<string, unknown>,
+            data: {
+                ...sessionData,
+                status: "captured" as PayuPaymentStatus,
+                payuTransactionId: verdict.payuTransactionId,
+                paymentMode: verdict.paymentMode,
+                bankRefNum: verdict.bankRefNum,
+            } as unknown as Record<string, unknown>,
         }
     }
 
@@ -937,11 +988,17 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
                         }
                     }
 
+                    // Do NOT return an `amount` sourced from the webhook here.
+                    // Medusa's processPaymentWorkflow forwards data.amount into
+                    // capturePaymentWorkflow, so echoing webhook.amount let a
+                    // forged/underpaid callback dictate the captured value.
+                    // Omitting it makes Medusa fall back to the session's own
+                    // amount, and capturePayment() independently re-verifies the
+                    // settled total against the stored session amount.
                     return {
                         action: this.config_.autoCapture ? "captured" : "authorized",
                         data: {
                             session_id: sessionId,
-                            amount: new BigNumber(webhook.amount),
                         },
                     }
                 case "failed":
