@@ -91,7 +91,14 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
                 // call threw, was swallowed by the catch below, and replay
                 // protection silently degraded to per-process memory on every
                 // deployment. Use a dynamic import, which works in ESM.
-                const { default: Redis } = await import("ioredis")
+                // ioredis ships a CJS default export; under a dynamic import in an ESM build it
+                // arrives on `.default` (sometimes nested). Normalise both shapes so
+                // the constructor is actually callable.
+                const ioredisModule: any = await import("ioredis")
+                const Redis = ioredisModule?.default?.default ?? ioredisModule?.default ?? ioredisModule
+                if (typeof Redis !== "function") {
+                    throw new Error("ioredis did not resolve to a constructor")
+                }
                 const redis = new Redis(redisUrl, { maxRetriesPerRequest: 2 })
                 try {
                     // Atomic SET NX EX: only the first claimant wins; no INCR+EXPIRE race.
@@ -741,7 +748,9 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
             const furl = `${cleanBase}/${sessionData.countryCode || 'in'}${cleanFailPath}`
 
             return {
-                id: newTxnid,
+                // UpdatePaymentOutput extends PaymentProviderOutput, which carries
+                // only `data` (and optionally `status`). Returning an `id` here was a
+                // type error; the fresh txnid is already recorded inside `data`.
                 data: {
                     ...sessionData,
                     txnid: newTxnid,  // Replace with fresh txnid
@@ -1018,17 +1027,25 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
                         }
                     }
 
-                    // Do NOT return an `amount` sourced from the webhook here.
-                    // Medusa's processPaymentWorkflow forwards data.amount into
-                    // capturePaymentWorkflow, so echoing webhook.amount let a
-                    // forged/underpaid callback dictate the captured value.
-                    // Omitting it makes Medusa fall back to the session's own
-                    // amount, and capturePayment() independently re-verifies the
-                    // settled total against the stored session amount.
+                    // `amount` is REQUIRED by WebhookActionData, so it cannot simply be omitted.
+                    //
+                    // Both `amount` and `udf4` are covered by the response hash that
+                    // was verified above, so neither can be tampered with. We report
+                    // udf4 — the amount this transaction was initiated for — rather
+                    // than echoing the request body.
+                    //
+                    // This value is ADVISORY ONLY. Medusa forwards it into
+                    // capturePaymentWorkflow, but capturePayment() ignores it and
+                    // re-derives the truth from the payment session's own stored
+                    // amount plus a fresh PayU verify_payment call. That check is the
+                    // actual authorisation boundary: pointing this callback at another
+                    // customer's session does not help, because the txnid verified is
+                    // the one recorded on that session at initiatePayment.
                     return {
                         action: this.config_.autoCapture ? "captured" : "authorized",
                         data: {
                             session_id: sessionId,
+                            amount: new BigNumber(webhook.udf4 || webhook.amount),
                         },
                     }
                 case "failed":

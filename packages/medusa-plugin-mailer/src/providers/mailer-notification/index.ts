@@ -77,11 +77,10 @@ export class MailerNotificationProviderService extends AbstractNotificationProvi
         })
 
         return {
-            to: notification.to,
-            status: "success",
-            data: {
-                messageId: result.messageId,
-            },
+            // ProviderSendNotificationResultsDTO only accepts an optional `id`.
+            // Returning `to`/`status`/`data` was a type error, and the message id
+            // is the only value the notification module can meaningfully store.
+            id: result.messageId,
         }
     }
 }

@@ -1,4 +1,5 @@
 const QUERY_KEY = "query"
+import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import {
     CUSTOMER_FIELDS,
     FULFILLMENT_FIELDS,

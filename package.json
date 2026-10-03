@@ -16,7 +16,7 @@
   ],
   "scripts": {
     "test": "node scripts/run-tests.cjs",
-    "typecheck": "yarn workspaces run typecheck",
+    "typecheck": "node scripts/typecheck.cjs",
     "build": "yarn workspaces run build",
     "lint": "yarn workspaces run lint"
   },

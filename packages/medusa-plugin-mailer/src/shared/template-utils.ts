@@ -6,6 +6,13 @@ const getBaseDir = () => {
         return __dirname
     }
     try {
+        // `import.meta` is only legal in an ES module, but this package compiles
+        // with `module: Node16` and no `"type": "module"`, so TypeScript rejects it
+        // here even though the branch is guarded at runtime and only executes when
+        // `__dirname` is absent (i.e. under Medusa's ESM build). The alternative —
+        // dropping this branch — would break template resolution in the ESM build,
+        // so suppress it narrowly rather than changing runtime behaviour.
+        // @ts-expect-error -- import.meta is guarded above; see comment.
         const fileUrl = import.meta.url
         const pathname = new URL(fileUrl).pathname
         return path.dirname(pathname.replace(/^\/([A-Za-z]:)/, "$1"))

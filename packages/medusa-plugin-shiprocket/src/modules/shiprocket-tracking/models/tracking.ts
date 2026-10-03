@@ -13,7 +13,9 @@ export const ShiprocketTracking = model.define("shiprocket_tracking", {
     sr_order_id: model.bigNumber().nullable(), // Shiprocket internal order ID
 
     // Link to Medusa
-    medusa_fulfillment_id: model.text().nullable().index("idx_shiprocket_tracking_fulfillment"),
+    // `.index()` is not available on the nullable modifier; add the index on the
+    // non-nullable text property so the generated DDL keeps the index.
+    medusa_fulfillment_id: model.text().index("idx_shiprocket_tracking_fulfillment").nullable(),
     medusa_order_id: model.text().nullable(),
 
     // Courier info
