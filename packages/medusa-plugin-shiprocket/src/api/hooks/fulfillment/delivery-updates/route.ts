@@ -1,10 +1,21 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import crypto from "crypto"
 import { fail, isValidAwb, ok } from "../../../../shared/http"
+import { RateLimiter, getClientIdentifier } from "../../../../shared/rate-limiter"
 
 // Module identifier - must match what's registered in medusa-config.ts
 const SHIPROCKET_TRACKING_MODULE = "shiprocketTrackingModuleService"
 export const AUTHENTICATE = false
+
+/** Minimum length for SHIPROCKET_WEBHOOK_TOKEN. 32 chars ~= 192 bits of entropy. */
+const WEBHOOK_TOKEN_MIN_LENGTH = 32
+
+/**
+ * Per-client request cap for this unauthenticated endpoint. Stricter than the
+ * public delivery-estimate limiter (30/min) because every request here is an
+ * unauthenticated token guess attempt. Shiprocket itself sends well under this.
+ */
+const webhookRateLimiter = new RateLimiter(20, 60 * 1000)
 
 /**
  * Constant-time string comparison to prevent timing attacks.
@@ -111,6 +122,16 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     const logger = req.scope.resolve("logger")
 
     try {
+        // Brute-force guard. The token is the only authentication on this
+        // unauthenticated endpoint, so a constant-time compare alone is not
+        // enough: without a request cap an attacker can submit unlimited
+        // guesses. Failed attempts are counted BEFORE any token comparison.
+        const clientId = getClientIdentifier(req)
+        if (!webhookRateLimiter.isAllowed(clientId)) {
+            logger.warn("Shiprocket webhook: rate limit exceeded")
+            return fail(res, 429, "RATE_LIMITED", "Too many requests")
+        }
+
         // Validate webhook token (header may be string|string[])
         const rawToken = req.headers["x-api-key"]
         const token = Array.isArray(rawToken) ? rawToken[0] : rawToken
@@ -118,6 +139,17 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
         if (!expectedToken) {
             logger.warn("Shiprocket webhook: SHIPROCKET_WEBHOOK_TOKEN not configured")
+            return fail(res, 500, "WEBHOOK_NOT_CONFIGURED", "Webhook not configured")
+        }
+
+        // Enforce an entropy floor. Previously any non-empty string (including
+        // "123") was accepted, which makes the shared secret guessable and
+        // renders the timing-safe comparison pointless.
+        if (expectedToken.length < WEBHOOK_TOKEN_MIN_LENGTH) {
+            logger.error(
+                `Shiprocket webhook: SHIPROCKET_WEBHOOK_TOKEN is too short ` +
+                `(${expectedToken.length} chars); at least ${WEBHOOK_TOKEN_MIN_LENGTH} required`
+            )
             return fail(res, 500, "WEBHOOK_NOT_CONFIGURED", "Webhook not configured")
         }
 
@@ -146,7 +178,12 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
                 awb: payload.awb,
             })
         }
-        processedWebhookKeys.set(idemKey, Date.now() + WEBHOOK_IDEMPOTENCY_TTL_MS)
+
+        // NOTE: the idempotency key is deliberately NOT claimed here. It is set
+        // only after upsertByAwb() succeeds (see below). Claiming it up-front
+        // meant that any failure below permanently swallowed retries: the key
+        // stayed in the map, Shiprocket's retry hit the early return above, and
+        // the tracking update was silently lost.
 
         if (processedWebhookKeys.size > 10000) {
             cleanupProcessedWebhookKeys()
@@ -200,12 +237,15 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         })
 
 
+        // Claim the idempotency key only now that the write has succeeded, so a
+        // failure below still allows Shiprocket's retry to be processed.
+        processedWebhookKeys.set(idemKey, Date.now() + WEBHOOK_IDEMPOTENCY_TTL_MS)
+
         logger.info(
             `Shiprocket webhook: Tracking updated for AWB ${payload.awb} - ` +
             `Record ID: ${tracking.id}`
         )
 
-        // Emit event for subscribers to handle
         // Emit event for subscribers to handle
         try {
             // Try v2 resolution first
@@ -253,7 +293,12 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
             awb: payload.awb,
         }, 200)
     } catch (error: any) {
-        logger.error(`Shiprocket webhook error: ${error.message}`, error)
+        // Log message only. Passing the raw error risks dumping an axios error
+        // whose `config.data` holds the Shiprocket login body (email/password)
+        // and whose `config.headers` holds the bearer token.
+        logger.error(
+            `Shiprocket webhook error: ${error instanceof Error ? error.message : "unknown error"}`
+        )
         return fail(res, 500, "INTERNAL_ERROR", "Internal server error")
     }
 }

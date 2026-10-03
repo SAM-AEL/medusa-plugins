@@ -1,6 +1,6 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { getShiprocketManager, hasShiprocketCredentials } from "../../../../providers/shiprocket/client/manager"
-import { rateLimiter, getClientIdentifier } from "./rate-limiter"
+import { rateLimiter, getClientIdentifier } from "../../../../shared/rate-limiter"
 import { fail, ok } from "../../../../shared/http"
 
 // Make this route public (no publishable API key required)

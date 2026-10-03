@@ -161,9 +161,9 @@ Configure your Shiprocket dashboard to deliver scan updates to:
 
 ## Security & Production Hardening
 
-- **Timing Side-Channel Protection:** Incoming webhook authentication evaluates `x-api-key` headers against `SHIPROCKET_WEBHOOK_TOKEN` using `crypto.timingSafeEqual`.
+- **Webhook Brute-Force Protection:** The unauthenticated `/hooks/fulfillment/delivery-updates` endpoint is rate limited per client (20 requests/minute) and rejects any `SHIPROCKET_WEBHOOK_TOKEN` shorter than 32 characters. Token comparison uses `crypto.timingSafeEqual`.
 - **AWB Sanitization:** AWB parameters are validated against strict alphanumeric patterns (`/^[a-zA-Z0-9_-]{4,50}$/`), mitigating injection vulnerabilities.
-- **Sliding-Window Public Rate Limiting:** The public `/store/shiprocket/tracking/:awb` route enforces a sliding-window rate limit per client IP (respecting `x-forwarded-for` and proxy hops), defending against scraping and denial-of-service attempts.
+- **Sliding-Window Public Rate Limiting:** The public `/store/shiprocket/delivery-estimate` route enforces a sliding-window rate limit per client IP (respecting `x-forwarded-for` and proxy hops), defending against scraping and denial-of-service attempts.
 - **Webhook Deduplication:** Incoming scans are deduplicated using a compound signature (`${awb}:${current_status_id}:${current_timestamp}`), preventing duplicate status updates.
 - **Credential Segregation:** Shiprocket authentication tokens are generated and cached in memory; passwords and bearer tokens are never exposed in administrative API responses.
 

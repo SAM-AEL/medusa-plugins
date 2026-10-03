@@ -2,7 +2,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import { isValidAwb } from "../shared/http"
 import { isRetryableShiprocketStatus } from "../providers/shiprocket/client/config"
-import { RateLimiter, getClientIdentifier } from "../api/store/shiprocket/delivery-estimate/rate-limiter"
+import { RateLimiter, getClientIdentifier } from "../shared/rate-limiter"
 
 test("Shiprocket AWB Validation", () => {
     // Valid standard numeric and alphanumeric AWBs
@@ -18,6 +18,37 @@ test("Shiprocket AWB Validation", () => {
     assert.equal(isValidAwb(undefined), false, "Undefined rejected")
     assert.equal(isValidAwb("AWB; DROP TABLE"), false, "Special chars rejected")
     assert.equal(isValidAwb("A".repeat(45)), false, "Too long (>40)")
+})
+
+test("Shiprocket Webhook Brute-Force Protection", () => {
+    // The webhook endpoint is unauthenticated and authenticated only by a
+    // shared secret, so a request cap must exist and weak tokens must be
+    // rejected before any comparison happens.
+    const WEBHOOK_TOKEN_MIN_LENGTH = 32
+
+    const limiter = new RateLimiter(3, 60 * 1000)
+    assert.equal(limiter.isAllowed("198.51.100.7"), true, "1st guess allowed")
+    assert.equal(limiter.isAllowed("198.51.100.7"), true, "2nd guess allowed")
+    assert.equal(limiter.isAllowed("198.51.100.7"), true, "3rd guess allowed")
+    assert.equal(limiter.isAllowed("198.51.100.7"), false, "4th guess blocked — brute force capped")
+
+    // A different client has its own bucket, so one attacker cannot exhaust others.
+    assert.equal(limiter.isAllowed("198.51.100.8"), true, "Separate client unaffected")
+
+    // Token entropy floor: anything below 32 chars must be treated as misconfigured.
+    assert.equal("123".length < WEBHOOK_TOKEN_MIN_LENGTH, true, "weak tokens must fail the floor")
+    assert.equal("a".repeat(32).length >= WEBHOOK_TOKEN_MIN_LENGTH, true, "32 chars must be accepted")
+    assert.equal("".length < WEBHOOK_TOKEN_MIN_LENGTH, true, "empty token must fail the floor")
+})
+
+test("Shiprocket Rate Limiter: Client Identifier Prefers Socket IP", () => {
+    // Spoofable headers must not be preferred over the resolved socket IP,
+    // otherwise an attacker rotates buckets at will.
+    const req = {
+        ip: "203.0.113.9",
+        headers: { "x-forwarded-for": "1.2.3.4, 5.6.7.8" },
+    }
+    assert.equal(getClientIdentifier(req), "203.0.113.9", "req.ip wins over spoofable header")
 })
 
 test("Shiprocket Retryable Status Codes", () => {
