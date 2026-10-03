@@ -76,12 +76,23 @@ export function getCurrencyFormatter(currencyCode: unknown): Intl.NumberFormat {
     return formatter;
 }
 
-/** Escape Discord markdown + neutralize @everyone/@here pings from user-controlled data. */
+/**
+ * Escape Discord markdown + neutralize @everyone/@here pings from user-controlled data.
+ *
+ * This is the single canonical implementation used across the plugin. A
+ * near-duplicate used to live in the subscriber with a narrower escape set,
+ * which risked the two drifting apart.
+ *
+ * `>`, `|` and `#` are escaped because they enable block quotes, tables and
+ * headings that could be used to disguise content. `:` and `-` are
+ * deliberately left alone so that URLs and dates still render correctly.
+ */
 export function discordEscape(value: unknown): string {
     const str = value === undefined || value === null ? "" : String(value);
     return str
         .replace(/@(everyone|here)/gi, "@\u200b$1")
-        .replace(/([\\*_`~\[\]()])/g, "\\$1");
+        .replace(/([*_`~|>#\[\]()])/g, "\\$1")
+        .slice(0, 1000);
 }
 
 export const ORDER_FIELDS = [

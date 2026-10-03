@@ -5,10 +5,23 @@ import {
     createTransporter,
     getSmtpConfig,
 } from "../../../../shared/mailer-runtime"
-import { fail, isValidEmail, ok } from "../../../../shared/http"
+import { fail, getActorId, isValidEmail, ok, RateLimiter } from "../../../../shared/http"
+
+/**
+ * Bound manual sends per authenticated admin: 30/hour. This endpoint accepts an
+ * arbitrary recipient, so without a cap a leaked admin credential could use the
+ * configured SMTP account as an open relay.
+ */
+const sendRateLimiter = new RateLimiter(30, 60 * 60 * 1000)
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
+
+    if (!sendRateLimiter.isAllowed(getActorId(req))) {
+        logger.warn("[Mailer] Manual send rate limit exceeded")
+        return fail(res, 429, "RATE_LIMITED", "Too many manual sends. Try again later.")
+    }
+
     const body = req.body as Record<string, any>
 
     const { to, subject, template_name, sender_index, variables } = body

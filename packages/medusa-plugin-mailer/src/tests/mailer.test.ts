@@ -2,7 +2,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import { escapeHtml, escapeRegExp, isSafeWebUrl, resolveDataPath, sanitizeEmailAddress, sanitizeSenderName } from "../shared/mailer-runtime"
 import { resolveTemplatePath, stripHtml } from "../shared/template-utils"
-import { isValidEmail } from "../shared/http"
+import { getActorId, isValidEmail, RateLimiter } from "../shared/http"
 
 test("Mailer HTML Escaping & Injection Protection", () => {
     assert.equal(
@@ -79,6 +79,32 @@ test("Mailer Email & Sender Sanitization", () => {
     // Email address sanitization
     assert.equal(sanitizeEmailAddress("  user@example.com  "), "user@example.com")
     assert.equal(sanitizeEmailAddress("user@example.com\r\n"), "user@example.com")
+})
+
+test("Mailer Admin Send Rate Limiter: caps per-actor sends", () => {
+    // Bounds the manual-send endpoint so a leaked admin credential cannot use
+    // the configured SMTP account as an open relay.
+    const limiter = new RateLimiter(3, 60 * 1000)
+    assert.equal(limiter.isAllowed("admin_1"), true, "1st send allowed")
+    assert.equal(limiter.isAllowed("admin_1"), true, "2nd send allowed")
+    assert.equal(limiter.isAllowed("admin_1"), true, "3rd send allowed")
+    assert.equal(limiter.isAllowed("admin_1"), false, "4th send blocked")
+
+    // Buckets are per-actor, so one admin cannot exhaust another's quota.
+    assert.equal(limiter.isAllowed("admin_2"), true, "separate admin unaffected")
+})
+
+test("Mailer getActorId: prefers the authenticated actor over spoofable headers", () => {
+    const req = {
+        auth_context: { actor_id: "user_abc" },
+        headers: { "x-forwarded-for": "9.9.9.9" },
+        ip: "10.0.0.1",
+    }
+    assert.equal(getActorId(req), "user_abc", "authenticated actor must win")
+
+    // Falls back to the socket address when no auth context is present.
+    assert.equal(getActorId({ ip: "10.0.0.1" }), "10.0.0.1")
+    assert.equal(getActorId({}), "unknown")
 })
 
 test("Mailer stripHtml Utility", () => {

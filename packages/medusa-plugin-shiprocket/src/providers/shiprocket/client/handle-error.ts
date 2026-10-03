@@ -20,6 +20,23 @@ interface ErrorContext {
 }
 
 /**
+ * Shiprocket field-level validation errors echo back the submitted values, which
+ * for this integration include customer name, email, phone and addresses. Those
+ * messages flow into logs and, via MedusaError, can reach the storefront. Report
+ * only the FIELD names so the failure is still diagnosable without carrying PII.
+ */
+const PII_FIELD_PATTERN =
+    /(name|email|phone|mobile|address|street|city|state|pincode|zip|contact|person|recipient|company)/i
+
+function summarizeValidationErrors(
+    errors: Record<string, unknown>
+): { fieldCount: number; fields: string[] } {
+    const fields = Object.keys(errors)
+    const safeFields = fields.map((f) => (PII_FIELD_PATTERN.test(f) ? "[redacted-field]" : f))
+    return { fieldCount: fields.length, fields: safeFields }
+}
+
+/**
  * Handles Shiprocket API errors and converts them to MedusaError with appropriate types
  * @param error - The Axios error from the API call
  * @param context - Optional context about the operation for better error messages
@@ -37,15 +54,14 @@ export function handleError(error: unknown, context?: ErrorContext): never {
         ? `[${context.operation}]`
         : ""
 
-    // Handle validation errors (field-level errors from Shiprocket)
+    // Handle validation errors (field-level errors from Shiprocket).
+    // Do NOT interpolate the upstream messages: they contain the submitted
+    // values (customer PII). Only report which fields failed.
     if (responseData?.errors && typeof responseData.errors === "object") {
-        const validationErrors = Object.entries(responseData.errors)
-            .map(([field, msgs]) => {
-                const msgStr = Array.isArray(msgs) ? msgs.join(", ") : String(msgs)
-                return `${field}: ${msgStr}`
-            })
-            .join("; ")
-        message = `Validation failed: ${validationErrors}`
+        const { fieldCount, fields } = summarizeValidationErrors(
+            responseData.errors as Record<string, unknown>
+        )
+        message = `Validation failed on ${fieldCount} field(s): ${fields.join(", ")}`
     }
 
     // Map HTTP status codes to appropriate MedusaError types

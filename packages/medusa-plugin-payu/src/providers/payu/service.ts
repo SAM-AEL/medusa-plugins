@@ -86,9 +86,12 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
         try {
             const redisUrl = process.env.REDIS_URL
             if (redisUrl) {
-                // Lazy-load so installs without ioredis still boot (falls back to memory).
-                // eslint-disable-next-line @typescript-eslint/no-var-requires
-                const Redis = require("ioredis")
+                // NOTE: this used to call require("ioredis"). The package builds to
+                // ESM (.medusa/server/**/*.js), where `require` is undefined — the
+                // call threw, was swallowed by the catch below, and replay
+                // protection silently degraded to per-process memory on every
+                // deployment. Use a dynamic import, which works in ESM.
+                const { default: Redis } = await import("ioredis")
                 const redis = new Redis(redisUrl, { maxRetriesPerRequest: 2 })
                 try {
                     // Atomic SET NX EX: only the first claimant wins; no INCR+EXPIRE race.
@@ -105,7 +108,11 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
                 }
             }
         } catch (e) {
-            this.logger_?.warn?.(`[PayU Webhook] Redis not available, falling back to in-memory cache`)
+            // Loud, because this means replay protection is per-process only.
+            this.logger_?.warn?.(
+                `[PayU Webhook] Redis unavailable, falling back to in-memory replay cache. ` +
+                `Duplicate suppression is per-process only. Cause: ${e instanceof Error ? e.message : String(e)}`
+            )
         }
 
         const now = Date.now()
@@ -499,20 +506,39 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
             // Random per-request token persisted in session data for idempotency.
             // A lost response retried later reuses the stored token instead of
             // minting a new one (which would double-refund at PayU).
+            // A refund token must only be reused for a retry of the SAME logical refund.
+            //
+            // Matching on amount alone was wrong: two legitimate partial refunds
+            // of the same value (e.g. two ₹100 refunds) would make the second
+            // reuse the first's tokenId, so PayU would treat it as a duplicate
+            // and the second refund would silently no-op.
+            //
+            // A refund record only exists once PayU accepted it, so the correct
+            // reuse case is "retry after a lost response" — which we detect via
+            // the caller-supplied refund key. Without such a key, always mint a
+            // fresh token so each distinct refund is independent.
             const existingRefunds = Array.isArray((sessionData as any).refunds)
-                ? (sessionData as any).refunds as Array<{ tokenId: string; amount: string }>
+                ? (sessionData as any).refunds as Array<Record<string, unknown>>
                 : []
             const refundAmount = this.formatAmount(input.amount)
 
-            const matchAmount = (r: { amount: string }) => {
-                try {
-                    return Math.round(parseFloat(r.amount) * 100) === Math.round(parseFloat(refundAmount) * 100)
-                } catch {
-                    return false
-                }
+            // Medusa does not expose a stable per-request refund id in
+            // CapturePaymentInput/RefundPaymentInput, so key on an explicit
+            // `refund_key` when the caller supplies one.
+            const refundKey = (input as any)?.data?.refund_key ?? (input as any)?.refund_key
+
+            let tokenId: string
+            if (typeof refundKey === "string" && refundKey.length > 0 && refundKey.length <= 128) {
+                const prior = existingRefunds.find((r) => r.refund_key === refundKey)
+                tokenId = typeof prior?.tokenId === "string"
+                    ? prior.tokenId
+                    : `REF_${crypto.randomBytes(8).toString("hex")}`
+            } else {
+                // No key supplied: a fresh token per call. Re-minting is safe
+                // because PayU is the source of truth and idempotency for an
+                // identical retry is handled by the "token already used" branch.
+                tokenId = `REF_${crypto.randomBytes(8).toString("hex")}`
             }
-            const reuse = existingRefunds.find(matchAmount)
-            const tokenId = reuse?.tokenId ?? `REF_${crypto.randomBytes(8).toString("hex")}`
 
             this.logger_?.debug?.(
                 `PayU refund request: mihpayid=${sessionData.payuTransactionId}, ` +
@@ -546,6 +572,10 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
                     tokenId,
                     amount: refundAmount,
                     request_id: response.request_id,
+                    // Persist the key so a retry with the same key reuses this token.
+                    refund_key: typeof refundKey === "string" && refundKey.length <= 128
+                        ? refundKey
+                        : undefined,
                     at: new Date().toISOString(),
                 }
                 return {

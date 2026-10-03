@@ -53,14 +53,16 @@ export function getCurrencyFormatter(currencyCode: unknown): Intl.NumberFormat {
     return formatter;
 }
 
-/** Escape Discord markdown + neutralize @everyone/@here pings from user-controlled data. */
-export function discordEscape(value: unknown): string {
-    const str = value === undefined || value === null ? "" : String(value);
-    return str
-        .replace(/@(everyone|here)/gi, "@\u200b$1")
-        .replace(/([*_`~|>:#\[\]()])/g, "\\$1")
-        .slice(0, 1000);
-}
+/**
+ * Escape Discord markdown + neutralize @everyone/@here pings from user-controlled data.
+ *
+ * Imported from shared/discord-fields, which is now the single canonical
+ * implementation. A near-duplicate used to live here with a narrower escape
+ * set, which risked the two drifting apart.
+ */
+import { discordEscape } from "../shared/discord-fields"
+
+export { discordEscape }
 
 function isSafeHttpUrl(url: string): boolean {
     try {
@@ -166,6 +168,11 @@ function compileTemplate(template: string, data: any): string {
     return template.replace(/\{([a-zA-Z0-9_.]+)\}/g, (match, path) => {
         const value = getNestedValue(data, path);
         let formatted = formatValue(value, path, data);
+        // Escape interpolated values so customer-controlled data cannot inject
+        // Discord markdown, block quotes, tables, or @everyone/@here pings.
+        // In JSON mode the escaping below must happen first so the backslashes
+        // are themselves escaped for valid JSON.
+        formatted = discordEscape(formatted);
         if (isJson && typeof formatted === "string") {
             formatted = formatted.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
         }

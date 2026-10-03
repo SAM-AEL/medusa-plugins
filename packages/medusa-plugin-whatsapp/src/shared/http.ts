@@ -1,5 +1,74 @@
 import type { MedusaResponse } from "@medusajs/framework/http"
 
+/**
+ * Minimal in-process sliding-window rate limiter.
+ *
+ * NOTE: state is per-process, so the effective ceiling scales with instance
+ * count. A shared store would be needed for a strict global limit.
+ */
+interface RateLimitEntry {
+    count: number
+    windowStart: number
+}
+
+export class RateLimiter {
+    private requests = new Map<string, RateLimitEntry>()
+    private readonly maxCacheSize = 10000
+    private readonly maxRequests: number
+    private readonly windowMs: number
+
+    constructor(maxRequests: number, windowMs: number) {
+        this.maxRequests = maxRequests
+        this.windowMs = windowMs
+        const timer = setInterval(() => this.cleanup(), 5 * 60 * 1000)
+        if (typeof (timer as any).unref === "function") {
+            ;(timer as any).unref()
+        }
+    }
+
+    isAllowed(identifier: string): boolean {
+        if (this.requests.size >= this.maxCacheSize) {
+            this.cleanup()
+        }
+        const now = Date.now()
+        const entry = this.requests.get(identifier)
+
+        if (!entry || now - entry.windowStart >= this.windowMs) {
+            this.requests.set(identifier, { count: 1, windowStart: now })
+            return true
+        }
+
+        if (entry.count >= this.maxRequests) {
+            return false
+        }
+
+        entry.count += 1
+        return true
+    }
+
+    private cleanup(): void {
+        const now = Date.now()
+        for (const [key, entry] of this.requests.entries()) {
+            if (now - entry.windowStart >= this.windowMs) {
+                this.requests.delete(key)
+            }
+        }
+    }
+}
+
+/**
+ * Identify the caller for rate-limiting purposes. Admin routes are
+ * authenticated, so the actor id is more reliable than a spoofable IP header.
+ */
+export function getActorId(req: any): string {
+    const actorId = req?.auth_context?.actor_id
+    if (actorId) {
+        return String(actorId)
+    }
+    const direct = req?.ip || req?.socket?.remoteAddress
+    return direct ? String(direct) : "unknown"
+}
+
 export const MAX_LIMIT = 100
 export const MAX_TEMPLATE_VARIABLES = 10
 

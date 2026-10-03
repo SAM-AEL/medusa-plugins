@@ -471,7 +471,8 @@ export default class ShiprocketClient {
     async getTrackingInfo(trackingNumber: string): Promise<ShiprocketTrackingResponse> {
         try {
             const response = await (await this.getSharedAxios()).get<ShiprocketTrackingResponse>(
-                `/courier/track/awb/${trackingNumber}`
+                // encodeURIComponent so an unexpected value cannot alter the path.
+                `/courier/track/awb/${encodeURIComponent(trackingNumber)}`
             )
             return response.data
         } catch (error: any) {
@@ -544,9 +545,19 @@ export default class ShiprocketClient {
         label: string
         invoice: string
     }> {
+        // Shiprocket tolerates a document failing to generate (e.g. an AWB not yet
+        // assigned), so these calls stay non-fatal. But the failure must be
+        // visible: previously only console.error fired, so a fulfilment could
+        // silently end up with no label. Log through the module logger with a
+        // status code only — never the raw response body, which can echo the
+        // request payload containing customer PII.
         const safePost = async (url: string, data: any) =>
-            (await this.getSharedAxios()).post(url, data).catch((err) => {
-                console.error(`Shiprocket API error at ${url}:`, err?.response?.data || err.message)
+            (await this.getSharedAxios()).post(url, data).catch((err: any) => {
+                const status = err?.response?.status ?? "network"
+                this.logger?.warn?.(
+                    `Shiprocket document generation failed at ${url} (${status}); ` +
+                    `continuing without that document.`
+                )
                 return { data: null }
             })
 

@@ -138,6 +138,7 @@ Define the following configuration variables in your `.env` file:
 | `PAYU_REDIRECT_URL` | `string` | No | `"/order/confirmed"` | Path on storefront for successful payment redirect. |
 | `PAYU_REDIRECT_FAILURE_URL` | `string` | No | `"/checkout"` | Path on storefront for failed or canceled payment redirect. |
 | `PAYU_API_TIMEOUT_MS` | `number` | No | `30000` | HTTP request timeout in milliseconds for PayU API calls. |
+| `REDIS_URL` | `string` | No | — | Redis connection string. **Strongly recommended in production**: without it, webhook replay protection is an in-memory cache scoped to a single process, so duplicate suppression does not hold across instances. Requires the optional `ioredis` dependency. |
 
 ---
 
@@ -179,6 +180,8 @@ The result is compared against `payload.hash` using constant-time evaluation.
 - **Underpayment Fraud Guard:** The webhook callback never dictates the captured amount. `getWebhookActionAndData` returns only the `session_id`, so Medusa falls back to the payment session's own stored amount rather than a value taken from the request body.
 - **Gateway-Reconfirmed Capture:** `capturePayment` calls the PayU `verify_payment` API for the session's own `txnid` and refuses to capture unless the gateway reports `success` **and** the settled amount covers the full session amount (compared in integer paise to avoid float drift). A partial payment, an unknown `txnid`, or a missing `txnid` all fail closed. Because the session data is read from the database, a callback that points at another customer's session cannot capture against it — the `txnid` recorded at `initiatePayment` is server-generated and is the value that gets verified.
 - **Callback Session ID Validation:** `input.data.session_id` originates from the caller and is echoed to PayU as `udf3`, so it is validated as a UUID before being stored.
+- **Refund Token Scoping:** Refund idempotency tokens are scoped to an explicit `refund_key` when the caller supplies one, rather than matched on amount. Matching on amount alone would make two legitimate same-value partial refunds reuse one token, silently voiding the second.
+- **Distributed Replay Protection:** When `REDIS_URL` is set, webhook dedupe uses an atomic Redis `SET NX EX` so the guarantee holds across instances. The client is loaded with a dynamic `import()` rather than `require()`, which is undefined in this package's ESM build and previously caused a silent fallback to a per-process cache.
 - **Sanitized Phone Formatting:** Validates and normalizes phone numbers to standard 10-digit Indian mobile formats (`^[6-9]\d{9}$`), stripping extraneous country prefixes and spaces.
 - **Zero Credential Exposure:** Secret keys and salts are never returned in client-facing API responses or serialized into database session metadata.
 

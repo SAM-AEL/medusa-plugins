@@ -5,14 +5,34 @@ import {
     getWhatsappConfig,
     sendWhatsappTemplateMessage,
 } from "../../../../shared/whatsapp-runtime"
-import { fail, normalizePhoneToE164, normalizeTemplateVariables, ok } from "../../../../shared/http"
+import {
+    fail,
+    getActorId,
+    normalizePhoneToE164,
+    normalizeTemplateVariables,
+    ok,
+    RateLimiter,
+} from "../../../../shared/http"
 import { redactSensitiveObject } from "../../../../shared/log-policy"
 
 const WHATSAPP_MODULE = "whatsapp"
 
+/**
+ * Bound manual sends per authenticated admin: 30/hour. This endpoint accepts an
+ * arbitrary destination number, so without a cap a leaked admin credential could
+ * send arbitrary WhatsApp messages on the business's account.
+ */
+const manualSendRateLimiter = new RateLimiter(30, 60 * 60 * 1000)
+
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const whatsappModule = req.scope.resolve(WHATSAPP_MODULE)
     const logger = req.scope.resolve(ContainerRegistrationKeys.LOGGER)
+
+    if (!manualSendRateLimiter.isAllowed(getActorId(req))) {
+        logger.warn("[WhatsApp] Manual send rate limit exceeded")
+        return fail(res, 429, "RATE_LIMITED", "Too many manual sends. Try again later.")
+    }
+
     const body = req.body as Record<string, any>
 
     const { phone_number, template_name, language_code, template_variables } = body
