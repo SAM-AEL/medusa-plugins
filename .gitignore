@@ -40,3 +40,18 @@ Thumbs.db
 # Tests & coverage
 coverage/
 .nyc_output/
+
+# AI, Editor & Local Agent Caches
+.commandcode/
+.agents/
+.artemis/
+.gemini/
+.claude/
+.cursor/
+.cline/
+.codex/
+.grok/
+.openclaw/
+.opencode/
+*.taste
+*.taste.*

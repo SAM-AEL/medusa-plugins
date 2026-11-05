@@ -3,6 +3,7 @@ import assert from "node:assert/strict"
 import { escapeHtml, escapeRegExp, isSafeWebUrl, resolveDataPath, sanitizeEmailAddress, sanitizeSenderName } from "../shared/mailer-runtime"
 import { resolveTemplatePath, stripHtml } from "../shared/template-utils"
 import { getActorId, isValidEmail, RateLimiter } from "../shared/http"
+import { resolveNotificationSender } from "../shared/sender-config"
 
 test("Mailer HTML Escaping & Injection Protection", () => {
     assert.equal(
@@ -79,6 +80,30 @@ test("Mailer Email & Sender Sanitization", () => {
     // Email address sanitization
     assert.equal(sanitizeEmailAddress("  user@example.com  "), "user@example.com")
     assert.equal(sanitizeEmailAddress("user@example.com\r\n"), "user@example.com")
+})
+
+test("Mailer notification provider uses profile defaults with explicit compatibility precedence", () => {
+    const profile = resolveNotificationSender({}, {
+        MAILER_FROM_ADDRESS_1: "profile@example.com",
+        MAILER_FROM_NAME_1: "Profile Sender",
+        MAILER_SENDER_1_EMAIL: "legacy@example.com",
+        MAILER_SENDER_1_NAME: "Legacy Sender",
+        MAILER_SMTP_USER: "smtp@example.com",
+    })
+    assert.deepEqual(profile, { fromAddress: "profile@example.com", fromName: "Profile Sender" })
+
+    const options = resolveNotificationSender({ fromEmail: "override@example.com", fromName: "Override" }, {
+        MAILER_FROM_ADDRESS_1: "profile@example.com",
+        MAILER_FROM_NAME_1: "Profile Sender",
+    })
+    assert.deepEqual(options, { fromAddress: "override@example.com", fromName: "Override" })
+
+    const legacy = resolveNotificationSender({}, {
+        MAILER_SENDER_1_EMAIL: "legacy@example.com",
+        MAILER_SENDER_1_NAME: "Legacy Sender",
+        MAILER_SMTP_USER: "smtp@example.com",
+    })
+    assert.deepEqual(legacy, { fromAddress: "legacy@example.com", fromName: "Legacy Sender" })
 })
 
 test("Mailer Admin Send Rate Limiter: caps per-actor sends", () => {

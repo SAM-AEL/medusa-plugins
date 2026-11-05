@@ -1,6 +1,6 @@
 {
   "name": "@sam-ael/medusa-plugin-mailer",
-  "version": "0.2.0",
+  "version": "2.0.0",
   "description": "Medusa v2 email notifications: hardcoded events, DB mappings (no seed), SMTP delivery.",
   "author": "SAM-AEL (https://www.github.com/SAM-AEL)",
   "homepage": "https://github.com/SAM-AEL/medusa-plugins/tree/main/packages/medusa-plugin-mailer#readme",
@@ -15,7 +15,9 @@
   "license": "MIT",
   "files": [
     ".medusa/server",
-    "email_templates"
+    "email_templates",
+    "README.md",
+    "LICENSE"
   ],
   "exports": {
     "./package.json": "./package.json",
@@ -49,7 +51,7 @@
     "prepublishOnly": "medusa plugin:build"
   },
   "dependencies": {
-    "nodemailer": "^6.9.0"
+    "nodemailer": ">=6.10.1 <7"
   },
   "devDependencies": {
     "@medusajs/admin-sdk": "2.12.4",

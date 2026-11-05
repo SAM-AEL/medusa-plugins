@@ -67,6 +67,6 @@ export const POST = async (req: AuthenticatedMedusaRequest, res: MedusaResponse)
         logger.error(
             `Admin pickup schedule error: ${error instanceof Error ? error.message : "unknown error"}`
         )
-        return fail(res, 500, "INTERNAL_ERROR", error.message || "Failed to schedule pickup")
+        return fail(res, 500, "INTERNAL_ERROR", "Failed to schedule pickup")
     }
 }

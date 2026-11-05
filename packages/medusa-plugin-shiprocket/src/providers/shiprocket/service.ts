@@ -370,7 +370,7 @@ class ShipRocketFulfillmentProviderService extends AbstractFulfillmentProviderSe
 
             const labelsEntry = labelUrl ? [{
                 tracking_number: externalData.awb_code || "",
-                tracking_url: externalData.awb_code ? `https://shiprocket.co/tracking/${externalData.awb_code}` : "",
+                tracking_url: externalData.awb_code ? `https://shiprocket.co/tracking/${encodeURIComponent(externalData.awb_code)}` : "",
                 label_url: labelUrl,
             }] : [];
 

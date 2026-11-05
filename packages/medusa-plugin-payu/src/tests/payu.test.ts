@@ -4,9 +4,126 @@ import { PayuClient, generateTxnId } from "../providers/payu/client"
 import { sanitizeIndianPhone, isValidIndianPhone } from "../providers/payu/phone-utils"
 import { isRetryablePayuStatus } from "../providers/payu/config"
 import { verifyCaptureEligibility } from "../providers/payu/capture-verification"
+import { markRefundSucceeded, reserveRefund } from "../providers/payu/refund-ledger"
 
-const TEST_KEY = "test_merchant_key_123"
-const TEST_SALT = "test_merchant_salt_456"
+const TEST_KEY = "example_merchant_key"
+const TEST_SALT = "example_merchant_salt"
+
+class RefundLedgerRedisMock {
+    operations = new Map<string, { payment_id: string; amount_paise: string; token_id: string; state: string; request_id?: string }>()
+    totals = new Map<string, number>()
+    private sequence = 0
+
+    async eval(_script: string, keyCount: number, ...args: string[]) {
+        if (keyCount === 1) {
+            const [operationKey, requestId] = args
+            const operation = this.operations.get(operationKey)
+            if (!operation) return 0
+            operation.state = "succeeded"
+            operation.request_id = requestId
+            return 1
+        }
+        if (keyCount === 2) {
+            const [operationKey, totalKey, paymentId, amountPaise, capturedPaise, alreadyRefundedPaise, tokenCandidate] = args
+            const existing = this.operations.get(operationKey)
+            if (existing) {
+                if (existing.payment_id !== paymentId || existing.amount_paise !== amountPaise) return ["conflict"]
+                return [existing.token_id, existing.state, existing.request_id || "", "0", existing.amount_paise]
+            }
+            const total = this.totals.get(totalKey) ?? Number(alreadyRefundedPaise)
+            if (total + Number(amountPaise) > Number(capturedPaise)) return ["exceeds_balance"]
+            const token = tokenCandidate || `REF_${++this.sequence}`
+            this.operations.set(operationKey, { payment_id: paymentId, amount_paise: amountPaise, token_id: token, state: "pending" })
+            this.totals.set(totalKey, total + Number(amountPaise))
+            return [token, "pending", "", "1"]
+        }
+        throw new Error("unexpected eval")
+    }
+}
+
+test("PayU refund ledger reuses reservations and rejects idempotency conflicts", async () => {
+    const redis = new RefundLedgerRedisMock()
+    const first = await reserveRefund({
+        redis,
+        paymentTransactionId: "mihpayid-1",
+        idempotencyKey: "refund-1",
+        amountPaise: 2500,
+        capturedPaise: 10000,
+    })
+    const retry = await reserveRefund({
+        redis,
+        paymentTransactionId: "mihpayid-1",
+        idempotencyKey: "refund-1",
+        amountPaise: 2500,
+        capturedPaise: 10000,
+    })
+    assert.equal(first.created, true)
+    assert.equal(retry.created, false)
+    assert.equal(retry.tokenId, first.tokenId)
+    await markRefundSucceeded({ redis, paymentTransactionId: "mihpayid-1", idempotencyKey: "refund-1", requestId: "request-1" })
+    const completedRetry = await reserveRefund({
+        redis,
+        paymentTransactionId: "mihpayid-1",
+        idempotencyKey: "refund-1",
+        amountPaise: 2500,
+        capturedPaise: 10000,
+    })
+    assert.equal(completedRetry.state, "succeeded")
+    assert.equal(completedRetry.requestId, "request-1")
+    await assert.rejects(
+        reserveRefund({ redis, paymentTransactionId: "mihpayid-1", idempotencyKey: "refund-1", amountPaise: 3000, capturedPaise: 10000 }),
+        /different refund/
+    )
+})
+
+test("PayU refund ledger keeps unknown operations pending for reconciliation", async () => {
+    const redis = new RefundLedgerRedisMock()
+    const first = await reserveRefund({
+        redis,
+        paymentTransactionId: "mihpayid-unknown",
+        idempotencyKey: "refund-unknown",
+        amountPaise: 1000,
+        capturedPaise: 10000,
+    })
+    const retry = await reserveRefund({
+        redis,
+        paymentTransactionId: "mihpayid-unknown",
+        idempotencyKey: "refund-unknown",
+        amountPaise: 1000,
+        capturedPaise: 10000,
+    })
+    assert.equal(first.state, "pending")
+    assert.equal(retry.state, "pending")
+    assert.equal(retry.created, false)
+    assert.equal(retry.tokenId, first.tokenId)
+})
+
+test("PayU refund ledger counts existing session refunds and validates stable keys", async () => {
+    const redis = new RefundLedgerRedisMock()
+    const reservation = await reserveRefund({
+        redis,
+        paymentTransactionId: "mihpayid-legacy",
+        idempotencyKey: "refund-new",
+        amountPaise: 1000,
+        capturedPaise: 5000,
+        alreadyRefundedPaise: 4000,
+    })
+    assert.equal(reservation.created, true)
+    await assert.rejects(
+        reserveRefund({ redis, paymentTransactionId: "mihpayid-other", idempotencyKey: "bad key", amountPaise: 100, capturedPaise: 1000 }),
+        /valid context.idempotency_key/
+    )
+})
+
+test("PayU refund ledger atomically prevents concurrent over-refunds", async () => {
+    const redis = new RefundLedgerRedisMock()
+    const results = await Promise.allSettled([
+        reserveRefund({ redis, paymentTransactionId: "mihpayid-2", idempotencyKey: "refund-a", amountPaise: 7000, capturedPaise: 10000 }),
+        reserveRefund({ redis, paymentTransactionId: "mihpayid-2", idempotencyKey: "refund-b", amountPaise: 7000, capturedPaise: 10000 }),
+    ])
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 1)
+    assert.equal(results.filter((result) => result.status === "rejected").length, 1)
+})
 
 test("PayU Capture: rejects a settled amount below the session amount", () => {
     // Session (authoritative, DB-backed) expects 5000.00 but PayU only settled
@@ -138,7 +255,7 @@ test("PayU Client: Payment Hash Generation and Verification Roundtrip", () => {
     const paymentData = {
         txnid: "T_TEST_12345",
         amount: "500.00",
-        productinfo: "Medusa Test Product",
+        productinfo: "Test Product",
         firstname: "John",
         email: "john.doe@example.com",
         udf1: "meta1",

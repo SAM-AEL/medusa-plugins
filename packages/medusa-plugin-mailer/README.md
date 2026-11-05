@@ -113,7 +113,7 @@ export default defineConfig({
 
 ### 2. Environment Variables
 
-Configure SMTP connectivity and branding in your `.env` file:
+Configure SMTP connectivity and sender profiles in your `.env` file:
 
 | Variable | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -122,8 +122,8 @@ Configure SMTP connectivity and branding in your `.env` file:
 | `MAILER_SMTP_USER` | `string` | Yes | — | SMTP authentication username. |
 | `MAILER_SMTP_PASS` | `string` | Yes | — | SMTP authentication password. |
 | `MAILER_SMTP_SECURE` | `boolean` | No | `false` | Set to `true` when connecting over port 465. |
-| `MAILER_FROM_NAME_1` | `string` | Yes | — | Default sender display name (Profile 1). |
-| `MAILER_FROM_ADDRESS_1` | `string` | Yes | — | Default sender email address (Profile 1). |
+| `MAILER_FROM_NAME_1` | `string` | No | — | Default sender display name (Profile 1). |
+| `MAILER_FROM_ADDRESS_1` | `string` | No | SMTP user | Default sender email address (Profile 1). |
 | `MAILER_FROM_NAME_2` … `_5` | `string` | No | — | Optional secondary sender profile display names. |
 | `MAILER_FROM_ADDRESS_2` … `_5` | `string` | No | — | Optional secondary sender email addresses. |
 | `MAILER_TEMPLATES_DIR` | `string` | No | Bundled | Custom directory path containing `.html` templates. |
@@ -133,6 +133,7 @@ Configure SMTP connectivity and branding in your `.env` file:
 | `MAILER_SEND_CONCURRENCY` | `number` | No | `2` | Maximum concurrent email dispatches per event trigger. |
 | `MAILER_SMTP_DEBUG` | `boolean` | No | `false` | Enable verbose Nodemailer connection debug logs. |
 
+The native Notification Provider uses explicit provider options first, then `MAILER_FROM_ADDRESS_1` and `MAILER_FROM_NAME_1`. Legacy `MAILER_SENDER_1_EMAIL` and `MAILER_SENDER_1_NAME` remain lower-priority compatibility aliases; `MAILER_SMTP_USER` is the final fallback sender address.
 ### 3. Database Migrations
 
 Create the `mailer_event_mapping` table and the `idx_mailer_event_active` composite index:
@@ -159,7 +160,7 @@ The plugin listens for the following Medusa event patterns:
 
 ### Admin API Endpoints
 
-All endpoints require an authenticated Medusa admin principal. These routes do not declare their own `middlewares.ts`, so they rely on the Medusa framework default of authenticating every route that does not explicitly opt out (`AUTHENTICATE = false`). Both admin **session cookies** and admin **API keys** are accepted.
+All endpoints require an authenticated Medusa admin principal, enforced explicitly in `src/api/middlewares.ts` (`authenticate("user", ["session", "bearer", "api-key"])`) in addition to the framework default. Both admin **session cookies** and admin **API keys** are accepted.
 
 | Method | Path | Description |
 |---|---|---|

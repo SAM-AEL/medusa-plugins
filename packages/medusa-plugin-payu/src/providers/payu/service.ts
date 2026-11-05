@@ -39,6 +39,7 @@ import type { PayuProviderConfig, PayuSessionData, PayuWebhookPayload, PayuPayme
 import { PayuClient, generateTxnId } from "./client"
 import { verifyCaptureEligibility } from "./capture-verification"
 import { sanitizeIndianPhone } from "./phone-utils"
+import { markRefundSucceeded, releaseRefund, reserveRefund } from "./refund-ledger"
 import crypto from "crypto"
 
 export const PAYU_PROVIDER_ID = "payu"
@@ -57,6 +58,7 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
     static identifier = PAYU_PROVIDER_ID
     private static readonly webhookReplayCache = new Map<string, number>()
     private static readonly webhookReplayTtlMs = 10 * 60 * 1000
+    private static redisClient: any = null
 
     /**
      * Validate provider options at startup
@@ -75,53 +77,46 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
                 "PayU: merchantSalt is required. Set PAYU_MERCHANT_SALT environment variable."
             )
         }
+        const environment = options.environment ?? process.env.PAYU_ENVIRONMENT ?? "test"
+        if (environment === "production" && !process.env.REDIS_URL) {
+            throw new MedusaError(
+                MedusaError.Types.INVALID_DATA,
+                "PayU: REDIS_URL is required in production for webhook replay protection. " +
+                "Without it, deduplication degrades to per-process memory."
+            )
+        }
     }
 
     protected config_: PayuProviderConfig
     protected logger_: Logger
     protected client_: PayuClient
 
+    private async getRedisClient(): Promise<any> {
+        const redisUrl = process.env.REDIS_URL
+        if (!redisUrl) throw new Error("REDIS_URL is required for PayU production safety")
+        if (!PayuPaymentProviderService.redisClient) {
+            const ioredisModule: any = await import("ioredis")
+            const Redis = ioredisModule?.default?.default ?? ioredisModule?.default ?? ioredisModule
+            if (typeof Redis !== "function") throw new Error("ioredis did not resolve to a constructor")
+            PayuPaymentProviderService.redisClient = new Redis(redisUrl, { maxRetriesPerRequest: 2, lazyConnect: true })
+        }
+        return PayuPaymentProviderService.redisClient
+    }
+
     private async markWebhookProcessed(key: string): Promise<boolean> {
-        const MAX_CACHE_SIZE = 10000
-        try {
-            const redisUrl = process.env.REDIS_URL
-            if (redisUrl) {
-                // NOTE: this used to call require("ioredis"). The package builds to
-                // ESM (.medusa/server/**/*.js), where `require` is undefined — the
-                // call threw, was swallowed by the catch below, and replay
-                // protection silently degraded to per-process memory on every
-                // deployment. Use a dynamic import, which works in ESM.
-                // ioredis ships a CJS default export; under a dynamic import in an ESM build it
-                // arrives on `.default` (sometimes nested). Normalise both shapes so
-                // the constructor is actually callable.
-                const ioredisModule: any = await import("ioredis")
-                const Redis = ioredisModule?.default?.default ?? ioredisModule?.default ?? ioredisModule
-                if (typeof Redis !== "function") {
-                    throw new Error("ioredis did not resolve to a constructor")
-                }
-                const redis = new Redis(redisUrl, { maxRetriesPerRequest: 2 })
-                try {
-                    // Atomic SET NX EX: only the first claimant wins; no INCR+EXPIRE race.
-                    const ok = await redis.set(
-                        `payu_webhook:${key}`,
-                        "1",
-                        "EX",
-                        Math.ceil(PayuPaymentProviderService.webhookReplayTtlMs / 1000),
-                        "NX"
-                    )
-                    return ok === "OK"
-                } finally {
-                    redis.disconnect()
-                }
-            }
-        } catch (e) {
-            // Loud, because this means replay protection is per-process only.
-            this.logger_?.warn?.(
-                `[PayU Webhook] Redis unavailable, falling back to in-memory replay cache. ` +
-                `Duplicate suppression is per-process only. Cause: ${e instanceof Error ? e.message : String(e)}`
+        if (this.config_.environment === "production" || process.env.REDIS_URL) {
+            const redis = await this.getRedisClient()
+            const result = await redis.set(
+                `payu_webhook:${key}`,
+                "1",
+                "EX",
+                Math.ceil(PayuPaymentProviderService.webhookReplayTtlMs / 1000),
+                "NX"
             )
+            return result === "OK"
         }
 
+        const MAX_CACHE_SIZE = 10000
         const now = Date.now()
         // Opportunistic expiry sweep (cheap: only when oversized or ~1% of calls)
         if (
@@ -200,7 +195,7 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
         } else {
             num = Number(amount)
         }
-        if (!Number.isFinite(num) || num < 0) {
+        if (!Number.isFinite(num) || num <= 0) {
             throw new MedusaError(
                 MedusaError.Types.INVALID_DATA,
                 `Invalid amount: ${String(amount)}`
@@ -239,14 +234,14 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
             }
             const sessionId = rawSessionId
 
-            // Fallback chain: customer data -> input data (passed from frontend)
-            // MedusaJS may not always populate the full customer context
-            const email = customer?.email || (inputData?.email as string)
-            if (!email) {
+            const sanitizeHashField = (v: unknown, maxLen: number): string =>
+                String(v ?? "").replace(/[\r\n|]/g, " ").trim().slice(0, maxLen)
+            const email = sanitizeHashField(customer?.email || (inputData?.email as string), 100)
+            const firstname = sanitizeHashField(customer?.first_name || (inputData?.firstname as string) || (inputData?.first_name as string), 60)
+            if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
                 throw new Error("Customer email is required for payment processing. Pass email in data payload or ensure customer is logged in.")
             }
 
-            const firstname = customer?.first_name || (inputData?.firstname as string) || (inputData?.first_name as string)
             if (!firstname) {
                 throw new Error("Customer name is required for payment processing. Pass firstname in data payload.")
             }
@@ -269,14 +264,9 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
             const rawProductinfo = (inputData?.productinfo as string) || "Order Payment"
             // PayU hash uses "|" as delimiter: strip pipes/newlines and cap length
             // so hash inputs stay well-formed and PayU validation is not broken.
-            const productinfo = rawProductinfo.replace(/[\r\n|]/g, " ").trim().slice(0, 100) || "Order Payment"
-
-            // Extract cart_id and customer_id for UDF fields
-            // These are passed through PayU and returned in webhook for traceability
-            const cartId = (inputData?.cart_id as string) || ""
-            const customerId = context?.customer?.id
-                || (inputData?.customer_id as string)
-                || ""
+            const productinfo = sanitizeHashField(rawProductinfo, 100) || "Order Payment"
+            const cartId = sanitizeHashField((inputData?.cart_id as string) || "", 100)
+            const customerId = sanitizeHashField(context?.customer?.id || (inputData?.customer_id as string) || "", 100)
 
             this.logger_?.debug?.(`PayU initiatePayment - sessionId from Medusa: ${sessionId}`)
 
@@ -292,16 +282,26 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
                 throw new Error("STOREFRONT_URL or NEXT_PUBLIC_BASE_URL environment variable is required")
             }
 
-            if (this.config_.environment === "production" && storefrontUrl.startsWith("http://")) {
-                throw new Error("STOREFRONT_URL must use https in production")
+            let storefrontOrigin: string
+            try {
+                const parsed = new URL(storefrontUrl)
+                if (parsed.protocol !== "https:" && this.config_.environment === "production") {
+                    throw new Error("STOREFRONT_URL must use https in production")
+                }
+                if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+                    throw new Error("STOREFRONT_URL must be an http(s) URL")
+                }
+                storefrontOrigin = parsed.origin
+            } catch (e) {
+                if (e instanceof MedusaError) throw e
+                throw new Error("STOREFRONT_URL must be a valid absolute URL")
             }
 
             const rawCountry = (inputData?.country_code as string) || "in"
             const countryCode = /^[a-z]{2}$/i.test(rawCountry) ? rawCountry.toLowerCase() : "in"
 
-            // Constructs the URL: {base}/{country}/{path}
-            // Ensure storefrontUrl doesn't have trailing slash and path starts with slash
-            const cleanBase = storefrontUrl.replace(/\/$/, "")
+            // Constructs the URL: {origin}/{country}/{path}
+            const cleanBase = storefrontOrigin.replace(/\/$/, "")
             const cleanPath = redirectPath.startsWith("/") ? redirectPath : `/${redirectPath}`
             const cleanFailPath = redirectFailurePath.startsWith("/") ? redirectFailurePath : `/${redirectFailurePath}`
 
@@ -364,7 +364,7 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
                 } as unknown as Record<string, unknown>,
             }
         } catch (error) {
-            this.logger_?.error?.(`PayU initiatePayment error: ${error}`)
+            this.logger_?.error?.(`PayU initiatePayment error: ${error instanceof Error ? error.message : "unknown"}`)
             throw error
         }
     }
@@ -510,53 +510,83 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
                 )
             }
 
-            // Random per-request token persisted in session data for idempotency.
-            // A lost response retried later reuses the stored token instead of
-            // minting a new one (which would double-refund at PayU).
-            // A refund token must only be reused for a retry of the SAME logical refund.
-            //
-            // Matching on amount alone was wrong: two legitimate partial refunds
-            // of the same value (e.g. two ₹100 refunds) would make the second
-            // reuse the first's tokenId, so PayU would treat it as a duplicate
-            // and the second refund would silently no-op.
-            //
-            // A refund record only exists once PayU accepted it, so the correct
-            // reuse case is "retry after a lost response" — which we detect via
-            // the caller-supplied refund key. Without such a key, always mint a
-            // fresh token so each distinct refund is independent.
             const existingRefunds = Array.isArray((sessionData as any).refunds)
                 ? (sessionData as any).refunds as Array<Record<string, unknown>>
                 : []
             const refundAmount = this.formatAmount(input.amount)
+            const idempotencyKey = input.context?.idempotency_key
+            if (typeof idempotencyKey !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(idempotencyKey)) {
+                throw new MedusaError(
+                    MedusaError.Types.INVALID_DATA,
+                    "A stable context.idempotency_key is required for PayU refunds"
+                )
+            }
 
-            // Medusa does not expose a stable per-request refund id in
-            // CapturePaymentInput/RefundPaymentInput, so key on an explicit
-            // `refund_key` when the caller supplies one.
-            const refundKey = (input as any)?.data?.refund_key ?? (input as any)?.refund_key
+            const redis = await this.getRedisClient()
+            const requestPaise = Math.round(parseFloat(refundAmount) * 100)
+            const capturedPaise = Math.round(parseFloat(String(sessionData.amount ?? "NaN")) * 100)
+            const alreadyRefundedPaise = existingRefunds.reduce((sum, refund) => {
+                const amount = Math.round(parseFloat(String(refund.amount ?? "NaN")) * 100)
+                return sum + (Number.isFinite(amount) ? amount : 0)
+            }, 0)
+            const reservation = await reserveRefund({
+                redis,
+                paymentTransactionId: sessionData.payuTransactionId,
+                idempotencyKey,
+                amountPaise: requestPaise,
+                capturedPaise,
+                alreadyRefundedPaise,
+            })
 
-            let tokenId: string
-            if (typeof refundKey === "string" && refundKey.length > 0 && refundKey.length <= 128) {
-                const prior = existingRefunds.find((r) => r.refund_key === refundKey)
-                tokenId = typeof prior?.tokenId === "string"
-                    ? prior.tokenId
-                    : `REF_${crypto.randomBytes(8).toString("hex")}`
-            } else {
-                // No key supplied: a fresh token per call. Re-minting is safe
-                // because PayU is the source of truth and idempotency for an
-                // identical retry is handled by the "token already used" branch.
-                tokenId = `REF_${crypto.randomBytes(8).toString("hex")}`
+            if (reservation.state === "pending" && !reservation.created) {
+                throw new MedusaError(
+                    MedusaError.Types.UNEXPECTED_STATE,
+                    "This PayU refund has an unresolved prior attempt. Reconcile it in the PayU dashboard before retrying."
+                )
+            }
+
+            if (reservation.state === "succeeded") {
+                const refunds = existingRefunds.some((refund) => refund.idempotency_key === idempotencyKey)
+                    ? existingRefunds
+                    : [...existingRefunds, {
+                        amount: refundAmount,
+                        request_id: reservation.requestId,
+                        idempotency_key: idempotencyKey,
+                        at: new Date().toISOString(),
+                    }]
+                const totalRefundedPaise = refunds.reduce((sum, refund) => {
+                    const amount = Math.round(parseFloat(String(refund.amount ?? "NaN")) * 100)
+                    return sum + (Number.isFinite(amount) ? amount : 0)
+                }, 0)
+                return {
+                    data: {
+                        ...sessionData,
+                        status: totalRefundedPaise >= capturedPaise ? "refunded" as PayuPaymentStatus : sessionData.status,
+                        refunds,
+                    } as unknown as Record<string, unknown>,
+                }
             }
 
             this.logger_?.debug?.(
-                `PayU refund request: mihpayid=${sessionData.payuTransactionId}, ` +
-                `txnid=${sessionData.txnid}, amount=${refundAmount}, tokenId=${tokenId}`
+                `PayU refund request reserved: txnid=${sessionData.txnid}, amount=${refundAmount}`
             )
 
-            const response = await this.client_.refund(
-                sessionData.payuTransactionId,
-                tokenId,
-                refundAmount
-            )
+            let response
+            try {
+                response = await this.client_.refund(
+                    sessionData.payuTransactionId,
+                    reservation.tokenId,
+                    refundAmount
+                )
+            } catch (error) {
+                // The request may have reached PayU before the connection failed.
+                // Keep the Redis reservation and token; retries must use this same
+                // idempotency key and must never create a fresh PayU token.
+                throw new MedusaError(
+                    MedusaError.Types.UNEXPECTED_STATE,
+                    "PayU refund result is unknown. Retry with the same context.idempotency_key after reconciliation."
+                )
+            }
 
             // Log PayU response metadata only (never full PII/hash payloads)
             this.logger_?.debug?.(
@@ -566,69 +596,50 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
             )
 
             if (response.status === 1) {
-                // Check for same-day capture message (treated as pending success)
-                if (response.msg?.includes?.("Capture is done today")) {
-                    this.logger_?.info?.(
-                        `PayU refund queued for ${sessionData.txnid}: Same-day capture, ` +
-                        `refund will be processed tomorrow. request_id=${response.request_id}`
-                    )
-                }
-
-                this.logger_?.info?.(`PayU refund successful: ${sessionData.txnid}, request_id=${response.request_id}`)
+                await markRefundSucceeded({
+                    redis,
+                    paymentTransactionId: sessionData.payuTransactionId,
+                    idempotencyKey,
+                    requestId: response.request_id,
+                })
                 const refundRecord = {
-                    tokenId,
                     amount: refundAmount,
                     request_id: response.request_id,
-                    // Persist the key so a retry with the same key reuses this token.
-                    refund_key: typeof refundKey === "string" && refundKey.length <= 128
-                        ? refundKey
-                        : undefined,
+                    idempotency_key: idempotencyKey,
                     at: new Date().toISOString(),
                 }
+                const refunds = existingRefunds.some((refund) => refund.idempotency_key === idempotencyKey)
+                    ? existingRefunds
+                    : [...existingRefunds, refundRecord]
+                const totalRefundedPaise = refunds.reduce((sum, refund) => {
+                    const amount = Math.round(parseFloat(String(refund.amount ?? "NaN")) * 100)
+                    return sum + (Number.isFinite(amount) ? amount : 0)
+                }, 0)
                 return {
                     data: {
                         ...sessionData,
-                        status: "refunded" as PayuPaymentStatus,
-                        refunds: [...existingRefunds, refundRecord],
+                        status: totalRefundedPaise >= capturedPaise ? "refunded" as PayuPaymentStatus : sessionData.status,
+                        refunds,
                         refund: {
-                            tokenId,
                             amount: refundAmount,
                             request_id: response.request_id,
-                            response
                         },
                     } as unknown as Record<string, unknown>,
                 }
             }
 
-            // Handle specific refund failure scenarios
-            let errorMessage = response.msg || "Unknown error"
-
-            // Common PayU refund errors with helpful messages
-            if (response.msg?.toLowerCase?.().includes?.("try after some time")) {
-                errorMessage =
-                    `PayU says: "${response.msg}". ` +
-                    `This usually means: ` +
-                    `(1) The payment was captured today and PayU requires 24 hours before refund, ` +
-                    `(2) A refund is already in progress for this transaction, or ` +
-                    `(3) PayU is experiencing temporary issues. Please try again later.`
-            } else if (response.msg?.toLowerCase?.().includes?.("token already used")) {
-                errorMessage =
-                    `Refund token already used. A refund may already be pending for this transaction. ` +
-                    `Please check the transaction status in PayU dashboard.`
-            } else if (response.msg?.toLowerCase?.().includes?.("transaction not exists")) {
-                errorMessage =
-                    `Transaction not found in PayU. The mihpayid (${sessionData.payuTransactionId}) may be incorrect.`
-            } else if (response.msg?.toLowerCase?.().includes?.("amount")) {
-                errorMessage =
-                    `Invalid refund amount (${refundAmount}). Please ensure it doesn't exceed the original transaction amount.`
+            const responseMessage = String(response.msg || "").toLowerCase()
+            if (responseMessage.includes("transaction not exists") || responseMessage.includes("invalid refund amount")) {
+                await releaseRefund({ redis, paymentTransactionId: sessionData.payuTransactionId, idempotencyKey })
+                throw new MedusaError(MedusaError.Types.INVALID_DATA, "PayU rejected the refund request")
             }
 
             throw new MedusaError(
-                MedusaError.Types.INVALID_DATA,
-                `Refund failed: ${errorMessage}`
+                MedusaError.Types.UNEXPECTED_STATE,
+                "PayU did not confirm the refund. The operation remains reserved; reconcile in the PayU dashboard before using a new idempotency key."
             )
         } catch (error) {
-            this.logger_?.error?.(`PayU refundPayment error: ${error}`)
+            this.logger_?.error?.(`PayU refundPayment error: ${error instanceof Error ? error.message : "unknown"}`)
             // Re-throw MedusaErrors as-is so message is preserved
             if (error instanceof MedusaError) {
                 throw error
@@ -707,6 +718,7 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
 
             this.logger_?.info?.(`PayU updatePayment: Generating fresh txnid ${newTxnid} (replacing ${sessionData.txnid})`)
 
+            this.formatAmount(sessionData.amount)
             const formattedAmount = amount ? this.formatAmount(amount) : sessionData.amount
 
             // Build redirect URLs from environment variables
@@ -721,13 +733,23 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
                 throw new Error("STOREFRONT_URL or NEXT_PUBLIC_BASE_URL environment variable is required")
             }
 
-            if (this.config_.environment === "production" && storefrontUrl.startsWith("http://")) {
-                throw new Error("STOREFRONT_URL must use https in production")
+            let storefrontOrigin: string
+            try {
+                const parsed = new URL(storefrontUrl)
+                if (parsed.protocol !== "https:" && this.config_.environment === "production") {
+                    throw new Error("STOREFRONT_URL must use https in production")
+                }
+                if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+                    throw new Error("STOREFRONT_URL must be an http(s) URL")
+                }
+                storefrontOrigin = parsed.origin
+            } catch (e) {
+                if (e instanceof MedusaError) throw e
+                throw new Error("STOREFRONT_URL must be a valid absolute URL")
             }
 
-            // Constructs the URL: {base}/{country}/{path}
-            // Ensure storefrontUrl doesn't have trailing slash and path starts with slash
-            const cleanBase = storefrontUrl.replace(/\/$/, "")
+            // Constructs the URL: {origin}/{country}/{path}
+            const cleanBase = storefrontOrigin.replace(/\/$/, "")
             const cleanPath = redirectPath.startsWith("/") ? redirectPath : `/${redirectPath}`
             const cleanFailPath = redirectFailurePath.startsWith("/") ? redirectFailurePath : `/${redirectFailurePath}`
 
@@ -776,7 +798,7 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
                 } as unknown as Record<string, unknown>,
             }
         } catch (error) {
-            this.logger_?.error?.(`PayU updatePayment error: ${error}`)
+            this.logger_?.error?.(`PayU updatePayment error: ${error instanceof Error ? error.message : "unknown"}`)
             throw error
         }
     }
@@ -900,8 +922,13 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
                 return { action: "not_supported" }
             }
 
-            if (!webhook.txnid || !webhook.status || !webhook.hash) {
-                this.logger_?.error?.(`[PayU Webhook] missing required fields - txnid:${webhook.txnid}, status:${webhook.status}, hash:${webhook.hash ? 'yes' : 'no'}`)
+            if (
+                typeof webhook.txnid !== "string" || !webhook.txnid ||
+                typeof webhook.status !== "string" || !webhook.status ||
+                typeof webhook.hash !== "string" || !webhook.hash ||
+                (webhook.amount !== undefined && typeof webhook.amount !== "string" && typeof webhook.amount !== "number")
+            ) {
+                this.logger_?.error?.("[PayU Webhook] missing or mistyped required fields")
                 return { action: "not_supported" }
             }
 
@@ -1082,8 +1109,11 @@ class PayuPaymentProviderService extends AbstractPaymentProvider<PayuProviderCon
             }
         } catch (error) {
             this.logger_?.error?.(
-                `PayU webhook processing error: ${error instanceof Error ? error.message : String(error)}`
+                `PayU webhook processing error: ${error instanceof Error ? error.message : "unknown"}`
             )
+            if (this.config_.environment === "production") {
+                throw error
+            }
             return { action: "not_supported" }
         }
     }

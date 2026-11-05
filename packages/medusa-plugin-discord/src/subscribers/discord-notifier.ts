@@ -60,17 +60,45 @@ export function getCurrencyFormatter(currencyCode: unknown): Intl.NumberFormat {
  * implementation. A near-duplicate used to live here with a narrower escape
  * set, which risked the two drifting apart.
  */
-import { discordEscape } from "../shared/discord-fields"
+import { discordEscape, DISCORD_SUBSCRIBER_CONFIG } from "../shared/discord-fields"
 
 export { discordEscape }
 
 function isSafeHttpUrl(url: string): boolean {
     try {
         const parsed = new URL(url);
-        return parsed.protocol === "https:" || parsed.protocol === "http:";
+        return parsed.protocol === "https:";
     } catch {
         return false;
     }
+}
+
+/**
+ * PII is redacted from default embeds unless the operator explicitly opts in
+ * via DISCORD_INCLUDE_PII=true. Discord messages persist outside GDPR
+ * retention controls, so email/phone are opt-in, not opt-out.
+ */
+const INCLUDE_PII = process.env.DISCORD_INCLUDE_PII === "true"
+
+function escapeMarkdownUrl(url: string): string {
+    return String(url).replace(/[()]/g, (c) => encodeURIComponent(c))
+}
+
+function capEmbed(embed: any): any {
+    const out = { ...embed }
+    if (typeof out.title === "string") out.title = out.title.slice(0, 256)
+    if (typeof out.description === "string") out.description = out.description.slice(0, 4096)
+    if (Array.isArray(out.fields)) {
+        out.fields = out.fields.slice(0, 25).map((f: any) => ({
+            ...f,
+            name: typeof f?.name === "string" ? f.name.slice(0, 256) : f?.name,
+            value: typeof f?.value === "string" ? f.value.slice(0, 1024) : f?.value,
+        }))
+    }
+    if (out.footer && typeof out.footer.text === "string") {
+        out.footer = { ...out.footer, text: discordEscape(out.footer.text).slice(0, 2048) }
+    }
+    return out
 }
 
 async function discordFetch(url: string, init: RequestInit, timeoutMs = 8000, retries = 1): Promise<Response> {
@@ -100,7 +128,7 @@ async function discordFetch(url: string, init: RequestInit, timeoutMs = 8000, re
 function finalizeDiscordPayload(identity: { username: string; avatar_url?: string }, parsedJson: any, fallbackContent: string) {
     const { username: _u, avatar_url: _a, allowed_mentions: _m, tts: _t, ...safe } = parsedJson || {};
     const content = typeof safe.content === "string" ? safe.content.slice(0, 2000) : undefined;
-    const embeds = Array.isArray(safe.embeds) ? safe.embeds.slice(0, 10) : undefined;
+    const embeds = Array.isArray(safe.embeds) ? safe.embeds.slice(0, 10).map(capEmbed) : undefined;
     if (content === undefined && embeds === undefined) {
         return { ...identity, allowed_mentions: { parse: [] }, content: fallbackContent.slice(0, 2000) };
     }
@@ -310,20 +338,20 @@ export default async function discordNotificationHandler({
                                 `Customer account **${customer.id}** was updated.`
 
             const defaultPayload = {
-                username: discordSvc.getDefaultBotName(),
+                username: discordEscape(discordSvc.getDefaultBotName()).slice(0, 80),
                 allowed_mentions: { parse: [] },
                 embeds: [
-                    {
-                        title: title,
-                        description: description,
+                    capEmbed({
+                        title: discordEscape(title).slice(0, 256),
+                        description: discordEscape(description).slice(0, 4096),
                         color: 3447003, // Blue
                         fields: [
-                            { name: "Name", value: discordEscape(nameStr).slice(0, 1024) || "New Customer", inline: true },
-                            { name: "Email", value: discordEscape(customer.email || "N/A").slice(0, 1024), inline: true }
+                            { name: "Name", value: (INCLUDE_PII ? discordEscape(nameStr) : "Redacted").slice(0, 1024) || "New Customer", inline: true },
+                            { name: "Email", value: (INCLUDE_PII ? discordEscape(customer.email || "N/A") : "Redacted").slice(0, 1024), inline: true }
                         ],
                         timestamp: new Date().toISOString(),
-                        footer: { text: (globalSettings.footer_text || "Medusa Storefront").slice(0, 2048) }
-                    }
+                        footer: { text: discordEscape(globalSettings.footer_text || "Your Store").slice(0, 2048) }
+                    })
                 ]
             }
 
@@ -366,7 +394,7 @@ export default async function discordNotificationHandler({
                     } catch (e) {
                         // Never log mapping.webhook_url — a Discord webhook URL IS the credential.
                         // Log the channel name instead, matching the delivery-failure path below.
-                        logger.error(`Error sending customer notification to ${mapping.channel_name || "unnamed"}: ${e}`)
+                        logger.error(`Error sending customer notification to ${mapping.channel_name || "unnamed"}: ${e instanceof Error ? e.message : "unknown"}`)
                     }
                 })
             )
@@ -454,7 +482,7 @@ export default async function discordNotificationHandler({
                                 const safeNumber = discordEscape(l.tracking_number).slice(0, 100)
                                 trackingNumbers.push(safeNumber)
                                 if (l.tracking_url && isSafeHttpUrl(String(l.tracking_url))) {
-                                    trackingLinks.push(`[${safeNumber}](${String(l.tracking_url)})`)
+                                    trackingLinks.push(`[${safeNumber}](${escapeMarkdownUrl(l.tracking_url)})`)
                                 } else {
                                     trackingLinks.push(safeNumber)
                                 }
@@ -535,9 +563,9 @@ export default async function discordNotificationHandler({
             shipmentStr = "Fulfillment Created 📦"
         }
 
-        const customerFirst = discordEscape(order.shipping_address?.first_name || order.customer?.first_name || "")
-        const customerLast = discordEscape(order.shipping_address?.last_name || order.customer?.last_name || "")
-        const customerEmail = discordEscape(order.email || "N/A")
+        const customerFirst = INCLUDE_PII ? discordEscape(order.shipping_address?.first_name || order.customer?.first_name || "") : "Redacted"
+        const customerLast = INCLUDE_PII ? discordEscape(order.shipping_address?.last_name || order.customer?.last_name || "") : ""
+        const customerEmail = INCLUDE_PII ? discordEscape(order.email || "N/A") : "redacted"
         const defaultEmbed: any = {
             title: `📦 Order #${order.display_id || String(order.id || "").slice(-6).toUpperCase()}`,
             color: color,
@@ -551,7 +579,7 @@ export default async function discordNotificationHandler({
                 { name: "Items Ordered", value: itemsDescription.slice(0, 4000) || "No items listed.", inline: false }
             ],
             timestamp: new Date().toISOString(),
-            footer: { text: (globalSettings.footer_text || "Medusa Storefront").slice(0, 2048) }
+            footer: { text: discordEscape(globalSettings.footer_text || "Your Store").slice(0, 2048) }
         }
 
         // Add thumbnail only for safe https URLs
@@ -559,8 +587,10 @@ export default async function discordNotificationHandler({
             defaultEmbed.thumbnail = { url: String(order.items[0].thumbnail) }
         }
 
+        const defaultEmbedCapped = capEmbed(defaultEmbed)
+
         const buildPayload = (template: string | null, botName?: string) => {
-            const resolvedBotName = (botName || discordSvc.getDefaultBotName()).slice(0, 80)
+            const resolvedBotName = discordEscape(botName || discordSvc.getDefaultBotName()).slice(0, 80)
             const identity = {
                 username: resolvedBotName,
                 ...(globalSettings.avatar_url ? { avatar_url: globalSettings.avatar_url } : {}),
@@ -583,7 +613,7 @@ export default async function discordNotificationHandler({
                 return {
                     ...identity,
                     allowed_mentions: { parse: [] },
-                    embeds: [defaultEmbed]
+                    embeds: [defaultEmbedCapped]
                 }
             }
         }
@@ -643,10 +673,10 @@ export default async function discordNotificationHandler({
                             activeWebhookUrls.delete(msg.webhook_url) // trigger a new post below
                         } else if (!response.ok) {
                             const err = await response.text()
-                            logger.error(`Failed to edit Discord message ${msg.message_id}: ${response.status} - ${err.slice(0, 300)}`)
+                            logger.error(`Failed to edit Discord message ${msg.message_id}: status ${response.status}`)
                         }
                     } catch (e) {
-                        logger.error(`Error editing Discord message ${msg.message_id}: ${e}`)
+                        logger.error(`Error editing Discord message ${msg.message_id}: ${e instanceof Error ? e.message : "unknown"}`)
                     }
                 })
             )
@@ -677,7 +707,7 @@ export default async function discordNotificationHandler({
 
                         if (!response.ok) {
                             const err = await response.text()
-                            logger.error(`Failed sending Discord webhook to channel ${mapping.channel_name || "unnamed"}: ${response.status} - ${err.slice(0, 300)}`)
+                            logger.error(`Failed sending Discord webhook to channel ${mapping.channel_name || "unnamed"}: status ${response.status}`)
                             return
                         }
 
@@ -697,36 +727,21 @@ export default async function discordNotificationHandler({
                                     message_id: responseData.id,
                                 })
                             } catch (e) {
-                                logger.error(`Failed storing Discord message reference: ${e}`)
+                                logger.error(`Failed storing Discord message reference: ${e instanceof Error ? e.message : "unknown"}`)
                             }
                         } else {
                             logger.error(`Discord response missing message id for channel ${mapping.channel_name || "unnamed"}`)
                         }
                     } catch (e) {
-                        logger.error(`Error posting new Discord webhook: ${e}`)
+                        logger.error(`Error posting new Discord webhook: ${e instanceof Error ? e.message : "unknown"}`)
                     }
                 })
             )
         }
 
     } catch (err) {
-        logger.error(`Error executing Discord notification subscriber: ${err}`)
+        logger.error(`Error executing Discord notification subscriber: ${err instanceof Error ? err.message : "unknown"}`)
     }
 }
 
-export const config: SubscriberConfig = {
-    event: [
-        "order.placed",
-        "order.completed",
-        "order.canceled",
-        "order.updated",
-        "order.fulfillment_created",
-        "fulfillment.created",
-        "fulfillment.shipment_created",
-        "shipment.created",
-        "customer.created",
-        "customer.updated",
-        "payment.captured",
-        "payment.refunded"
-    ],
-}
+export const config: SubscriberConfig = DISCORD_SUBSCRIBER_CONFIG

@@ -1,6 +1,7 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { DISCORD_NOTIFICATION_MODULE } from "../../../../modules/discord-notification"
-import { ok, fail } from "../../../../shared/http"
+import { ok, fail, RateLimiter, getActorId } from "../../../../shared/http"
+import { discordEscape } from "../../../../shared/discord-fields"
 
 function getNestedValue(obj: any, path: string): any {
     const parts = path.split(".");
@@ -49,11 +50,29 @@ function formatValue(value: any, path: string): string {
     return String(value);
 }
 
+function sanitizeEmbedFields(embeds: any[]): any[] {
+    return embeds.slice(0, 10).map((e: any) => {
+        if (!e || typeof e !== "object") return e
+        const out: any = { ...e }
+        if (typeof out.title === "string") out.title = out.title.slice(0, 256)
+        if (typeof out.description === "string") out.description = out.description.slice(0, 4096)
+        if (Array.isArray(out.fields)) {
+            out.fields = out.fields.slice(0, 25).map((f: any) => ({
+                ...f,
+                name: typeof f?.name === "string" ? f.name.slice(0, 256) : f?.name,
+                value: typeof f?.value === "string" ? f.value.slice(0, 1024) : f?.value,
+            }))
+        }
+        if (out.footer && typeof out.footer.text === "string") out.footer = { ...out.footer, text: out.footer.text.slice(0, 2048) }
+        return out
+    })
+}
+
 function compileTemplate(template: string, data: any): string {
     const isJson = template.trim().startsWith("{") && template.trim().endsWith("}");
     return template.replace(/\{([a-zA-Z0-9_.]+)\}/g, (match, path) => {
         const value = getNestedValue(data, path);
-        let formatted = formatValue(value, path);
+        let formatted = discordEscape(formatValue(value, path));
         if (isJson && typeof formatted === "string") {
             formatted = formatted.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
         }
@@ -65,27 +84,14 @@ const mockOrder = {
     id: "order_01H2X3Y4Z5W6V7U8T9S0R1Q2P3",
     display_id: 1234,
     status: "pending",
-    email: "customer@example.com",
     currency_code: "usd",
     total: 12550,
     subtotal: 10000,
     shipping_address: {
-        first_name: "Jane",
-        last_name: "Doe",
-        phone: "+15551234567",
-        city: "New York"
+        city: "Example City"
     },
-    billing_address: {
-        first_name: "Jane",
-        last_name: "Doe",
-        phone: "+15551234567"
-    },
-    customer: {
-        first_name: "Jane",
-        last_name: "Doe",
-        email: "customer@example.com",
-        phone: "+15551234567"
-    },
+    billing_address: {},
+    customer: {},
     items: [
         { title: "Premium Graphic Tee", quantity: 2, unit_price: 5000 },
         { title: "Sticker Pack", quantity: 1, unit_price: 2550 }
@@ -93,20 +99,22 @@ const mockOrder = {
 }
 
 const mockCustomer = {
-    id: "cus_01H2X3Y4Z5W6V7U8T9S0R1Q2P3",
-    email: "newuser@example.com",
-    first_name: "John",
-    last_name: "Smith",
-    phone: "+15559876543"
+    id: "cus_example_123"
 }
+
+const verifyRateLimiter = new RateLimiter(5, 60 * 1000)
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const discordSvc = req.scope.resolve(DISCORD_NOTIFICATION_MODULE) as any
     const body = req.body as Record<string, any>
     const id = body.id || (req.query.id as string)
 
-    if (!id) {
+    if (!id || typeof id !== "string") {
         return fail(res, 400, "INVALID_PAYLOAD", "Mapping ID is required")
+    }
+
+    if (!verifyRateLimiter.isAllowed(`${getActorId(req)}:${id}`)) {
+        return fail(res, 429, "RATE_LIMITED", "Too many test pings for this mapping. Try again in a minute.")
     }
 
     try {
@@ -126,11 +134,11 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
                 const parsedJson = JSON.parse(content)
                 const { username: _u, avatar_url: _a, allowed_mentions: _m, tts: _t, ...safe } = parsedJson || {}
                 payload = {
-                    username: mapping.bot_name || discordSvc.getDefaultBotName(),
+                    username: (mapping.bot_name || discordSvc.getDefaultBotName()).slice(0, 80),
                     ...(globalSettings.avatar_url ? { avatar_url: globalSettings.avatar_url } : {}),
                     allowed_mentions: { parse: [] },
                     ...(typeof safe.content === "string" ? { content: safe.content.slice(0, 2000) } : {}),
-                    ...(Array.isArray(safe.embeds) ? { embeds: safe.embeds.slice(0, 10) } : {}),
+                    ...(Array.isArray(safe.embeds) ? { embeds: sanitizeEmbedFields(safe.embeds) } : {}),
                 }
             } catch (e) {
                 payload = {
@@ -155,7 +163,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
                             { name: "Status", value: mapping.is_active ? "🟢 Active" : "🔴 Inactive", inline: true }
                         ],
                         timestamp: new Date().toISOString(),
-                        footer: { text: "Medusa Storefront Integration" }
+                        footer: { text: "Your Store" }
                     }
                 ]
             }
@@ -175,11 +183,15 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
             clearTimeout(timer)
         }
 
-        if (!response.ok) {
-            const errText = (await response.text()).slice(0, 300)
-            return fail(res, 400, "WEBHOOK_FAILED", `Discord webhook returned status ${response.status}: ${errText}`)
+        if (response.status === 429) {
+            return fail(res, 429, "RATE_LIMITED", "Discord rate-limited the test ping. Try again shortly.")
         }
 
+        if (!response.ok) {
+            return fail(res, 400, "WEBHOOK_FAILED", `Discord rejected the test ping (status ${response.status})`)
+        }
+
+        await discordSvc.updateDiscordWebhookMappings({ id, is_active: true })
         return ok(res, { success: true })
     } catch (err: any) {
         const msg = String(err?.name === "AbortError" ? "Discord webhook timed out" : err?.message || "Failed to trigger test ping").slice(0, 300)

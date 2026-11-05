@@ -6,7 +6,7 @@ import {
     Table, Badge, Text, Select, FocusModal, toast, Tabs
 } from "@medusajs/ui"
 import { useState, useEffect, useCallback, useRef } from "react"
-import { getSuggestedDataPathsForEvent } from "../../../../shared/discord-fields"
+import { DISCORD_EVENTS, DISCORD_EVENT_LABELS, getSuggestedDataPathsForEvent } from "../../../../shared/discord-fields"
 
 const BACKEND_URL = (__BACKEND_URL__ ?? "").replace(/\/+$/, "")
 
@@ -27,17 +27,10 @@ async function api(path: string, options?: RequestInit) {
     return data
 }
 
-const PRESET_EVENTS = [
-    { value: "order.placed", label: "Order Placed (order.placed)" },
-    { value: "order.fulfillment_created", label: "Fulfillment Created (order.fulfillment_created)" },
-    { value: "fulfillment.shipment_created", label: "Shipment Created (fulfillment.shipment_created)" },
-    { value: "order.completed", label: "Order Completed (order.completed)" },
-    { value: "order.canceled", label: "Order Canceled (order.canceled)" },
-    { value: "payment.captured", label: "Payment Captured (payment.captured)" },
-    { value: "payment.refunded", label: "Payment Refunded (payment.refunded)" },
-    { value: "customer.created", label: "Customer Created (customer.created)" },
-    { value: "customer.updated", label: "Customer Updated (customer.updated)" },
-]
+const PRESET_EVENTS = DISCORD_EVENTS.map((value) => ({
+    value,
+    label: `${DISCORD_EVENT_LABELS[value]} (${value})`,
+}))
 
 const EXAMPLE_TEMPLATES: Record<string, string> = {
     "order.placed": JSON.stringify({
@@ -51,7 +44,7 @@ const EXAMPLE_TEMPLATES: Record<string, string> = {
                 { name: "Items", value: "{items}", inline: false }
             ],
             thumbnail: { url: "{thumbnail}" },
-            footer: { text: "Powered by Medusa" }
+            footer: { text: "Your Store" }
         }]
     }, null, 2),
     "order.fulfillment_created": JSON.stringify({
@@ -116,7 +109,7 @@ const EMPTY_FORM = {
     event_name: "order.placed",
     webhook_url: "",
     channel_name: "",
-    is_active: true,
+    is_active: false,
     message_template: "",
     bot_name: "",
 }
@@ -143,13 +136,14 @@ function MappingModal({
             setForm({ ...EMPTY_FORM })
             return
         }
-        // find in parent - passed via onSaved reload, but we fetch directly
+        // The server never returns the full webhook URL (masked read), so edits
+        // require re-entering it. Other fields are loaded for convenience.
         api(`/mappings`).then((data) => {
             const m = (data.mappings || []).find((x: any) => x.id === editingId)
             if (m) {
                 setForm({
                     event_name: m.event_name,
-                    webhook_url: m.webhook_url,
+                    webhook_url: "",
                     channel_name: m.channel_name || "",
                     is_active: m.is_active,
                     message_template: m.message_template || "",
@@ -190,12 +184,17 @@ function MappingModal({
             return
         }
 
+        if (editingId && !form.webhook_url.trim() && form.event_name) {
+            toast.error("Re-enter the webhook URL to save changes (it is never displayed back)")
+            return
+        }
+
         setSaving(true)
         try {
             if (editingId) {
                 const data = await api(`/mappings/${editingId}`, {
                     method: "POST",
-                    body: JSON.stringify(form),
+                    body: JSON.stringify({ ...form, is_active: false }),
                 })
                 if (data.success) {
                     toast.success("Mapping updated successfully")
@@ -281,10 +280,10 @@ function MappingModal({
                             </div>
 
                             <div>
-                                <Label htmlFor="modal-webhook-url">Discord Webhook URL</Label>
+                                <Label htmlFor="modal-webhook-url">Discord Webhook URL{editingId ? " (re-enter to save)" : ""}</Label>
                                 <Input
                                     id="modal-webhook-url"
-                                    placeholder="https://discord.com/api/webhooks/..."
+                                    placeholder={editingId ? "Stored URL is hidden — paste again to keep or rotate" : "https://discord.com/api/webhooks/..."}
                                     value={form.webhook_url}
                                     onChange={(e) => setForm({ ...form, webhook_url: e.target.value })}
                                 />
@@ -412,7 +411,7 @@ function SettingsTab() {
                 <div className="flex flex-col gap-2">
                     <Label>Default Footer Text</Label>
                     <Input 
-                        placeholder="Medusa Storefront" 
+                        placeholder="Your Store"
                         value={form.footer_text}
                         onChange={(e) => setForm({ ...form, footer_text: e.target.value })}
                     />
@@ -479,6 +478,10 @@ function DiscordNotificationsPage() {
     }
 
     const toggleActive = async (m: any, checked: boolean) => {
+        if (checked) {
+            toast.info("Use Test to verify and enable this webhook")
+            return
+        }
         try {
             const data = await api(`/mappings/${m.id}`, {
                 method: "POST",
@@ -503,7 +506,8 @@ function DiscordNotificationsPage() {
                 body: JSON.stringify({ id }),
             })
             if (data.success) {
-                toast.success("Test notification sent successfully!")
+                toast.success("Webhook verified and enabled")
+                loadMappings()
             } else {
                 toast.error(data.message || "Webhook test failed")
             }
@@ -585,7 +589,7 @@ function DiscordNotificationsPage() {
                                     </Table.Cell>
                                     <Table.Cell>
                                         <Text size="small" className="text-ui-fg-subtle font-mono">
-                                            {maskWebhookUrl(m.webhook_url)}
+                                            {m.masked_url || maskWebhookUrl(m.webhook_url)}
                                         </Text>
                                     </Table.Cell>
                                     <Table.Cell>

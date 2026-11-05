@@ -17,8 +17,10 @@
   "scripts": {
     "test": "node scripts/run-tests.cjs",
     "typecheck": "node scripts/typecheck.cjs",
-    "build": "yarn workspaces run build",
-    "lint": "yarn workspaces run lint"
+    "build": "node scripts/build-plugins.cjs",
+    "lint": "node scripts/typecheck.cjs",
+    "check:mailer-build": "node scripts/check-mailer-build.cjs",
+    "check:generic-branding": "node scripts/check-generic-branding.cjs"
   },
   "devDependencies": {
     "typescript": "^5.6.2"

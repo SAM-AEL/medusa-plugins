@@ -46,8 +46,14 @@ export function handleError(error: unknown, context?: ErrorContext): never {
     const statusCode = axiosError?.response?.status || 0
     const responseData = axiosError?.response?.data
 
-    // Extract error message from Shiprocket response
-    let message = responseData?.message || axiosError?.message || "Unknown Shiprocket error"
+    // Extract error message from Shiprocket response. Upstream messages can echo
+    // submitted customer values, so only use short allowlisted messages verbatim.
+    const rawMessage = typeof responseData?.message === "string" ? responseData.message : ""
+    let message = rawMessage.length > 0 && rawMessage.length <= 200 && !PII_FIELD_PATTERN.test(rawMessage)
+        ? rawMessage
+        : axiosError?.message && axiosError.message.length <= 200
+          ? "Shiprocket request failed"
+          : "Unknown Shiprocket error"
 
     // Add context to message if available
     const contextStr = context?.operation

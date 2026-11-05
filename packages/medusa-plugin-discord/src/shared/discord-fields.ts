@@ -9,34 +9,34 @@ export const DISCORD_EVENTS = [
     "order.fulfillment_created",
     "fulfillment.created",
     "fulfillment.shipment_created",
-    "fulfillment.delivery_created",
-    "customer.created",
-    "customer.updated",
-    "return.created",
-    "return.received",
-    "claim.created",
-    "exchange.created",
-];
-
-/**
- * Events the subscriber actually handles. Mappings for other events
- * are accepted (forward-compat) but will never fire until the subscriber
- * subscribes to them.
- */
-export const SUPPORTED_DISCORD_EVENTS = [
-    "order.placed",
-    "order.completed",
-    "order.canceled",
-    "order.updated",
-    "order.fulfillment_created",
-    "fulfillment.created",
-    "fulfillment.shipment_created",
     "shipment.created",
     "customer.created",
     "customer.updated",
     "payment.captured",
     "payment.refunded",
 ] as const
+
+export const SUPPORTED_DISCORD_EVENTS = DISCORD_EVENTS
+export const DISCORD_SUBSCRIBER_CONFIG = { event: [...SUPPORTED_DISCORD_EVENTS] }
+
+export function isSupportedDiscordEvent(value: unknown): value is (typeof DISCORD_EVENTS)[number] {
+    return typeof value === "string" && (DISCORD_EVENTS as readonly string[]).includes(value)
+}
+
+export const DISCORD_EVENT_LABELS: Record<(typeof DISCORD_EVENTS)[number], string> = {
+    "order.placed": "Order Placed",
+    "order.completed": "Order Completed",
+    "order.canceled": "Order Canceled",
+    "order.updated": "Order Updated",
+    "order.fulfillment_created": "Fulfillment Created",
+    "fulfillment.created": "Fulfillment Created",
+    "fulfillment.shipment_created": "Shipment Created",
+    "shipment.created": "Shipment Created",
+    "customer.created": "Customer Created",
+    "customer.updated": "Customer Updated",
+    "payment.captured": "Payment Captured",
+    "payment.refunded": "Payment Refunded",
+}
 
 const WEBHOOK_RE =
     /^https:\/\/discord\.com\/api\/webhooks\/\d+\/[A-Za-z0-9_-]+$/

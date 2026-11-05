@@ -43,15 +43,15 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
         // For each template, extract its variables
         const templates = files.map((filename) => {
-            const filePath = resolveTemplatePath(filename) || path.join(resolvedDir, filename)
+            const filePath = resolveTemplatePath(filename)
+            if (!filePath) return null
             const html = fs.readFileSync(filePath, "utf-8")
             const variables = extractVariables(html)
             return { filename, variables }
-        })
+        }).filter(Boolean)
 
         return ok(res, {
             templates,
-            directory: resolvedDir,
             using_fallback: usingFallback,
             ...(usingFallback && {
                 message: "Using bundled default templates. Set MAILER_TEMPLATES_DIR env var to use your own templates.",
@@ -60,7 +60,6 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     } catch (error: any) {
         return fail(res, 500, "TEMPLATE_READ_FAILED", "Failed to load templates", {
             templates: [],
-            reason: error.message,
         })
     }
 }

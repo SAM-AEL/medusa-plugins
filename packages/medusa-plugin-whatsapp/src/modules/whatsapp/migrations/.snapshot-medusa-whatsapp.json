@@ -24,15 +24,6 @@
           "nullable": true,
           "mappedType": "text"
         },
-        "access_token": {
-          "name": "access_token",
-          "type": "text",
-          "unsigned": false,
-          "autoincrement": false,
-          "primary": false,
-          "nullable": true,
-          "mappedType": "text"
-        },
         "api_version": {
           "name": "api_version",
           "type": "text",

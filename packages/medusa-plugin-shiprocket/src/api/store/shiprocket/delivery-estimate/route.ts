@@ -131,7 +131,7 @@ export async function GET(
 
         return ok(res, { estimate })
     } catch (error: any) {
-        logger.error(`Delivery estimate error: ${error.message}`)
-        return fail(res, 500, "DELIVERY_ESTIMATE_FAILED", error.message || "An unexpected error occurred")
+        logger.error(`Delivery estimate error: ${error instanceof Error ? error.message : "unknown"}`)
+        return fail(res, 500, "DELIVERY_ESTIMATE_FAILED", "Failed to get delivery estimate")
     }
 }

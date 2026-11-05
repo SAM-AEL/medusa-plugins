@@ -211,4 +211,4 @@ node --no-warnings --loader ./scripts/ts-loader.mjs --test packages/medusa-plugi
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [MIT License](./LICENSE).

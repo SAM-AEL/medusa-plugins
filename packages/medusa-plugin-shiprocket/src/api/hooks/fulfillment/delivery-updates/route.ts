@@ -146,10 +146,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         // "123") was accepted, which makes the shared secret guessable and
         // renders the timing-safe comparison pointless.
         if (expectedToken.length < WEBHOOK_TOKEN_MIN_LENGTH) {
-            logger.error(
-                `Shiprocket webhook: SHIPROCKET_WEBHOOK_TOKEN is too short ` +
-                `(${expectedToken.length} chars); at least ${WEBHOOK_TOKEN_MIN_LENGTH} required`
-            )
+            logger.error("Shiprocket webhook: SHIPROCKET_WEBHOOK_TOKEN is too short")
             return fail(res, 500, "WEBHOOK_NOT_CONFIGURED", "Webhook not configured")
         }
 
@@ -213,24 +210,24 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
             }
         }
 
-        // Upsert tracking record
+        // Upsert tracking record (cap free-form upstream strings before persistence)
         const tracking = await trackingService.upsertByAwb({
             awb: payload.awb,
-            order_id: payload.order_id,
+            order_id: typeof payload.order_id === "string" ? payload.order_id.slice(0, 128) : payload.order_id,
             medusa_order_id: medusaOrderId, // Linked Medusa Order ID
             sr_order_id: payload.sr_order_id ? Number(payload.sr_order_id) : undefined,
-            courier_name: payload.courier_name,
-            current_status: payload.current_status,
+            courier_name: typeof payload.courier_name === "string" ? payload.courier_name.slice(0, 256) : payload.courier_name,
+            current_status: typeof payload.current_status === "string" ? payload.current_status.slice(0, 256) : payload.current_status,
             current_status_id: payload.current_status_id ? Number(payload.current_status_id) : undefined,
-            shipment_status: payload.shipment_status,
+            shipment_status: typeof payload.shipment_status === "string" ? payload.shipment_status.slice(0, 256) : payload.shipment_status,
             shipment_status_id: payload.shipment_status_id ? Number(payload.shipment_status_id) : undefined,
             current_timestamp: parseDate(payload.current_timestamp),
             etd: parseDate(payload.etd),
             awb_assigned_date: parseDate(payload.awb_assigned_date),
             pickup_scheduled_date: parseDate(payload.pickup_scheduled_date),
             scans: sanitizeScans(payload.scans),
-            pod_status: payload.pod_status,
-            pod: payload.pod,
+            pod_status: typeof payload.pod_status === "string" ? payload.pod_status.slice(0, 256) : payload.pod_status,
+            pod: typeof payload.pod === "string" ? payload.pod.slice(0, 2048) : payload.pod,
             is_return: payload.is_return === 1,
             channel_id: payload.channel_id ? Number(payload.channel_id) : undefined,
             raw_payload: payload,

@@ -1,6 +1,6 @@
 {
   "name": "@sam-ael/medusa-plugin-payu",
-  "version": "0.1.4",
+  "version": "2.0.0",
   "description": "PayU India payment gateway integration for Medusa v2 with redirect flow.",
   "author": "SAM-AEL (https://www.github.com/SAM-AEL)",
   "homepage": "https://github.com/SAM-AEL/medusa-plugins/tree/main/packages/medusa-plugin-payu#readme",
@@ -14,7 +14,9 @@
   },
   "license": "MIT",
   "files": [
-    ".medusa/server"
+    ".medusa/server",
+    "README.md",
+    "LICENSE"
   ],
   "exports": {
     "./package.json": "./package.json",

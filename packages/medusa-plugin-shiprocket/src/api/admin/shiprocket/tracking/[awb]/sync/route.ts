@@ -184,6 +184,6 @@ export const POST = async (req: AuthenticatedMedusaRequest, res: MedusaResponse)
             `Admin tracking sync error: ${error instanceof Error ? error.message : "unknown error"}`
         )
 
-        return fail(res, 500, "SYNC_FAILED", error.message || "Failed to sync tracking data")
+        return fail(res, 500, "SYNC_FAILED", "Failed to sync tracking data")
     }
 }

@@ -397,7 +397,7 @@ export default class ShiprocketClient {
                 courier_company_id: responseData.courier_company_id,
                 courier_name: responseData.courier_name || orderCreated.data.courier_name,
                 tracking_number: responseData.awb_code,
-                tracking_url: `https://shiprocket.co/tracking/${responseData.awb_code}`,
+                tracking_url: `https://shiprocket.co/tracking/${encodeURIComponent(responseData.awb_code)}`,
             }
 
         } catch (error: any) {

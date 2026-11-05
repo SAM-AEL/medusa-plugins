@@ -26,11 +26,11 @@ export function validateAndSanitizePhone(phone: string, fieldName: string = "Pho
     // Convert to number
     const num = Number(cleaned)
 
-    // Validate
+    // Validate (never echo the submitted value: it is PII and flows into logs/API errors)
     if (isNaN(num)) {
         throw new MedusaError(
             MedusaError.Types.INVALID_DATA,
-            `${fieldName} contains invalid characters: ${phone}`
+            `${fieldName} contains invalid characters`
         )
     }
 
@@ -38,7 +38,7 @@ export function validateAndSanitizePhone(phone: string, fieldName: string = "Pho
     if (cleaned.length !== 10) {
         throw new MedusaError(
             MedusaError.Types.INVALID_DATA,
-            `${fieldName} must be 10 digits, got ${cleaned.length}: ${phone}`
+            `${fieldName} must be 10 digits, got ${cleaned.length}`
         )
     }
 
@@ -66,11 +66,11 @@ export function validateAndSanitizePincode(pincode: string, fieldName: string = 
     // Convert to number
     const num = Number(cleaned)
 
-    // Validate
+    // Validate (never echo the submitted value)
     if (isNaN(num)) {
         throw new MedusaError(
             MedusaError.Types.INVALID_DATA,
-            `${fieldName} contains invalid characters: ${pincode}`
+            `${fieldName} contains invalid characters`
         )
     }
 
@@ -78,7 +78,7 @@ export function validateAndSanitizePincode(pincode: string, fieldName: string = 
     if (!/^\d{6}$/.test(cleaned)) {
         throw new MedusaError(
             MedusaError.Types.INVALID_DATA,
-            `${fieldName} must be 6 digits, got ${cleaned.length}: ${pincode}`
+            `${fieldName} must be 6 digits, got ${cleaned.length}`
         )
     }
 

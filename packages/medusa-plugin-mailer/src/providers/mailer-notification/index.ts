@@ -1,11 +1,10 @@
 import { AbstractNotificationProviderService, MedusaError } from "@medusajs/framework/utils"
 import type { ProviderSendNotificationDTO, ProviderSendNotificationResultsDTO } from "@medusajs/framework/types"
-import {
-    createTransporter,
-    buildRenderedMessage,
-    sanitizeSenderName,
-    sanitizeEmailAddress,
-} from "../../shared/mailer-runtime"
+import { createTransporter, buildRenderedMessage, sanitizeEmailAddress } from "../../shared/mailer-runtime"
+import { isValidEmail } from "../../shared/http"
+import { resolveNotificationSender } from "../../shared/sender-config.js"
+
+export { resolveNotificationSender } from "../../shared/sender-config.js"
 
 export interface MailerNotificationOptions {
     fromEmail?: string
@@ -56,21 +55,18 @@ export class MailerNotificationProviderService extends AbstractNotificationProvi
             throw new MedusaError(MedusaError.Types.INVALID_DATA, `Template '${templateName}' could not be loaded`)
         }
 
-        const fromAddress = sanitizeEmailAddress(
-            this.options_.fromEmail ||
-            process.env.MAILER_SENDER_1_EMAIL ||
-            process.env.MAILER_SMTP_USER ||
-            ""
-        )
-        const fromName = sanitizeSenderName(
-            this.options_.fromName ||
-            process.env.MAILER_SENDER_1_NAME ||
-            "Store"
-        )
+        const cleanTo = sanitizeEmailAddress(notification.to)
+        if (!isValidEmail(cleanTo)) {
+            throw new MedusaError(MedusaError.Types.INVALID_DATA, "Notification recipient ('to') must be a valid email address")
+        }
+        const { fromAddress, fromName } = resolveNotificationSender(this.options_)
+        if (!isValidEmail(fromAddress)) {
+            throw new MedusaError(MedusaError.Types.INVALID_DATA, "Sender address is misconfigured")
+        }
 
         const result = await transporter.sendMail({
             from: { name: fromName, address: fromAddress },
-            to: notification.to,
+            to: cleanTo,
             subject: rendered.subject,
             html: rendered.html,
             text: rendered.text,

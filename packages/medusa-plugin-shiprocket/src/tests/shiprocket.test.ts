@@ -3,6 +3,7 @@ import assert from "node:assert/strict"
 import { isValidAwb } from "../shared/http"
 import { isRetryableShiprocketStatus } from "../providers/shiprocket/client/config"
 import { RateLimiter, getClientIdentifier } from "../shared/rate-limiter"
+import { validateAndSanitizePhone, validateAndSanitizePincode } from "../providers/shiprocket/utils/validation"
 
 test("Shiprocket AWB Validation", () => {
     // Valid standard numeric and alphanumeric AWBs
@@ -112,4 +113,29 @@ test("Shiprocket Client Identifier: IP Resolution Priority", () => {
     // Unknown fallback
     const reqEmpty = { headers: {} }
     assert.equal(getClientIdentifier(reqEmpty), "unknown")
+})
+
+test("Shiprocket 2.0: validation errors never echo PII values", () => {
+    try {
+        validateAndSanitizePhone("abc", "Phone")
+        assert.fail("should throw")
+    } catch (e: any) {
+        assert.ok(!String(e.message).includes("abc"), "submitted phone must not be echoed")
+    }
+    try {
+        validateAndSanitizePhone("12345", "Phone")
+        assert.fail("should throw")
+    } catch (e: any) {
+        assert.ok(!String(e.message).includes("12345"), "submitted phone must not be echoed")
+        assert.ok(String(e.message).includes("10 digits"))
+    }
+    try {
+        validateAndSanitizePincode("1100", "Pincode")
+        assert.fail("should throw")
+    } catch (e: any) {
+        assert.ok(!String(e.message).includes("1100"), "submitted pincode must not be echoed")
+        assert.ok(String(e.message).includes("6 digits"))
+    }
+    assert.equal(validateAndSanitizePhone("98765 43210"), 9876543210)
+    assert.equal(validateAndSanitizePincode("110001"), 110001)
 })

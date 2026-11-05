@@ -3,11 +3,14 @@ import assert from "node:assert/strict"
 import {
     normalizeWebhookUrl,
     isValidWebhookUrl,
+    DISCORD_EVENTS,
     SUPPORTED_DISCORD_EVENTS,
+    DISCORD_SUBSCRIBER_CONFIG,
     toMajorUnits,
     getCurrencyFormatter,
     discordEscape
 } from "../shared/discord-fields"
+import { maskWebhookUrl, toSafeMapping, RateLimiter } from "../shared/http"
 
 test("Discord Webhook URL Normalization & Validation", () => {
     // Valid standard discord webhook
@@ -73,10 +76,29 @@ test("Discord Content Escaping: Neutralize Mentions & Markdown Injection", () =>
     assert.equal(discordEscape(12345), "12345")
 })
 
-test("Discord Supported Events Matrix", () => {
-    assert.ok(SUPPORTED_DISCORD_EVENTS.includes("order.placed"))
-    assert.ok(SUPPORTED_DISCORD_EVENTS.includes("order.completed"))
-    assert.ok(SUPPORTED_DISCORD_EVENTS.includes("order.canceled"))
-    assert.ok(SUPPORTED_DISCORD_EVENTS.includes("payment.captured"))
-    assert.ok(SUPPORTED_DISCORD_EVENTS.includes("fulfillment.shipment_created"))
+test("Discord event allowlist matches subscriber-supported events", () => {
+    assert.deepEqual(DISCORD_EVENTS, SUPPORTED_DISCORD_EVENTS)
+    assert.deepEqual(DISCORD_SUBSCRIBER_CONFIG.event, DISCORD_EVENTS)
+    for (const event of ["order.placed", "payment.captured", "payment.refunded", "shipment.created"]) {
+        assert.ok(DISCORD_EVENTS.includes(event as (typeof DISCORD_EVENTS)[number]))
+    }
+    for (const event of ["return.created", "claim.created", "exchange.created", "order.unrecognized"]) {
+        assert.equal(DISCORD_EVENTS.includes(event as (typeof DISCORD_EVENTS)[number]), false)
+    }
+})
+
+test("Discord 2.0: maskWebhookUrl never leaks the bearer token", () => {
+    const url = "https://discord.com/api/webhooks/123456789012345678/AbCdEfGhIjKlMnOpQrStUvWxYz_123456"
+    const masked = maskWebhookUrl(url)
+    assert.ok(!masked.includes("AbCdEfGhIjKlMnOpQrStUvWxYz"), "full token must not appear")
+    assert.ok(masked.includes("…3456"), "last4 retained for identification")
+    assert.ok(masked.startsWith("https://discord.com/api/webhooks/123456789012345678/"))
+    assert.equal(maskWebhookUrl("not-a-url"), "…invalid")
+    const safe = toSafeMapping({ id: "m1", event_name: "order.placed", webhook_url: url })
+    assert.equal((safe as any).webhook_url, undefined, "raw URL stripped")
+    assert.equal((safe as any).masked_url, masked)
+    const rl = new RateLimiter(2, 60 * 1000)
+    assert.equal(rl.isAllowed("actor:m1"), true)
+    assert.equal(rl.isAllowed("actor:m1"), true)
+    assert.equal(rl.isAllowed("actor:m1"), false, "third ping within window is throttled")
 })

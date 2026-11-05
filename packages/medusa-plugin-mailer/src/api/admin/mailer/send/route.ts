@@ -5,7 +5,7 @@ import {
     createTransporter,
     getSmtpConfig,
 } from "../../../../shared/mailer-runtime"
-import { fail, getActorId, isValidEmail, ok, RateLimiter } from "../../../../shared/http"
+import { fail, getActorId, isValidEmail, normalizeTemplateVariables, ok, RateLimiter } from "../../../../shared/http"
 
 /**
  * Bound manual sends per authenticated admin: 30/hour. This endpoint accepts an
@@ -58,7 +58,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const rendered = buildRenderedMessage({
         templateName: template_name,
         subject: subject || "",
-        variables: variables || {},
+        variables: normalizeTemplateVariables(variables),
         recipientEmail: to,
     })
 
@@ -76,8 +76,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         try {
             await transporter.verify()
         } catch (verifyErr: any) {
-            logger.error(`[Mailer] SMTP connection failed: ${verifyErr.message}`)
-            return fail(res, 500, "SMTP_VERIFY_FAILED", `SMTP connection failed: ${verifyErr.message}`)
+            logger.error("[Mailer] SMTP connection failed")
+            return fail(res, 500, "SMTP_VERIFY_FAILED", "SMTP connection failed")
         }
 
         const info: any = await transporter.sendMail({
@@ -106,7 +106,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
             envelope: info.envelope,
         })
     } catch (error: any) {
-        logger.error(`[Mailer] Manual email error: ${error.message}`)
-        return fail(res, 500, "SEND_FAILED", error.message)
+        logger.error("[Mailer] Manual email error")
+        return fail(res, 500, "SEND_FAILED", "Failed to send email")
     }
 }

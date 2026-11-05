@@ -66,7 +66,7 @@ Customer              Medusa v2 Storefront           Medusa v2 Backend          
 - **Bi-Directional SHA-512 Verification:** Generates cryptographic outbound request hashes and verifies incoming reverse hashes with zero tolerance for parameter tampering.
 - **Handling of `additionalCharges`:** Seamlessly supports PayU convenience fees and surcharges by dynamically prefixing `additionalCharges|` in reverse hash verification.
 - **Timing Side-Channel Protection:** Employs `crypto.timingSafeEqual` across all hash comparisons to protect against timing attacks.
-- **Replay Attack Defense:** In-memory sliding window cache deduplicates webhook transmissions, preventing double authorization or double capture.
+- **Replay Attack Defense:** Redis `SET NX EX` deduplicates webhook transmissions across instances. Production fails closed if Redis is unavailable; in-memory dedupe is for development only.
 - **Underpayment Discrepancy Guards:** The callback never supplies the capture amount, and `capturePayment` re-verifies the settled total against the stored session amount via the PayU verify API before marking a payment captured.
 - **Phone Number Normalization:** Automatically standardizes Indian phone numbers into valid 10-digit mobile formats expected by PayU.
 - **Retry Logic with Jitter:** Server-to-server verification queries utilize exponential backoff and jitter across retryable HTTP status codes (`408`, `429`, `500`, `502`, `503`, `504`).
@@ -138,7 +138,7 @@ Define the following configuration variables in your `.env` file:
 | `PAYU_REDIRECT_URL` | `string` | No | `"/order/confirmed"` | Path on storefront for successful payment redirect. |
 | `PAYU_REDIRECT_FAILURE_URL` | `string` | No | `"/checkout"` | Path on storefront for failed or canceled payment redirect. |
 | `PAYU_API_TIMEOUT_MS` | `number` | No | `30000` | HTTP request timeout in milliseconds for PayU API calls. |
-| `REDIS_URL` | `string` | No | — | Redis connection string. **Strongly recommended in production**: without it, webhook replay protection is an in-memory cache scoped to a single process, so duplicate suppression does not hold across instances. Requires the optional `ioredis` dependency. |
+| `REDIS_URL` | `string` | Required in production | — | Redis connection string used for distributed webhook replay protection and atomic refund reservations. Redis failures stop production webhook/refund processing. Requires the `ioredis` dependency. |
 
 ---
 
@@ -176,11 +176,11 @@ The result is compared against `payload.hash` using constant-time evaluation.
 ## Security & Production Hardening
 
 - **Constant-Time Hash Comparison:** Eliminates timing side channels by utilizing Node.js's native `crypto.timingSafeEqual` buffer comparison.
-- **Replay Protection Store:** Enforces a sliding 10-minute cache on transaction signatures (`txnid:status:mihpayid:amount`). Identical subsequent webhooks are acknowledged without triggering secondary payment captures.
+- **Replay Protection Store:** Uses Redis atomic `SET NX EX` on transaction signatures (`txnid:status:mihpayid:amount`) to suppress duplicates across instances. Production fails closed when Redis is unavailable.
 - **Underpayment Fraud Guard:** The webhook callback never dictates the captured amount. `getWebhookActionAndData` returns only the `session_id`, so Medusa falls back to the payment session's own stored amount rather than a value taken from the request body.
 - **Gateway-Reconfirmed Capture:** `capturePayment` calls the PayU `verify_payment` API for the session's own `txnid` and refuses to capture unless the gateway reports `success` **and** the settled amount covers the full session amount (compared in integer paise to avoid float drift). A partial payment, an unknown `txnid`, or a missing `txnid` all fail closed. Because the session data is read from the database, a callback that points at another customer's session cannot capture against it — the `txnid` recorded at `initiatePayment` is server-generated and is the value that gets verified.
 - **Callback Session ID Validation:** `input.data.session_id` originates from the caller and is echoed to PayU as `udf3`, so it is validated as a UUID before being stored.
-- **Refund Token Scoping:** Refund idempotency tokens are scoped to an explicit `refund_key` when the caller supplies one, rather than matched on amount. Matching on amount alone would make two legitimate same-value partial refunds reuse one token, silently voiding the second.
+- **Refund Idempotency:** Every refund requires a stable `context.idempotency_key`. Redis atomically reserves its PayU token and remaining balance before the gateway request; retries with the same key and amount reuse the token. Reusing a key for a different amount is rejected. Network timeouts and any non-success PayU response remain reserved and require reconciliation in the PayU dashboard. Retrying a pending key will fail closed without resubmitting to PayU; only a confirmed resolution may be reflected by the integration. Never issue a new key for an unresolved operation.
 - **Distributed Replay Protection:** When `REDIS_URL` is set, webhook dedupe uses an atomic Redis `SET NX EX` so the guarantee holds across instances. The client is loaded with a dynamic `import()` rather than `require()`, which is undefined in this package's ESM build and previously caused a silent fallback to a per-process cache.
 - **Sanitized Phone Formatting:** Validates and normalizes phone numbers to standard 10-digit Indian mobile formats (`^[6-9]\d{9}$`), stripping extraneous country prefixes and spaces.
 - **Zero Credential Exposure:** Secret keys and salts are never returned in client-facing API responses or serialized into database session metadata.

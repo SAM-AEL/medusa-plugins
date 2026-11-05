@@ -1,27 +1,17 @@
 import * as fs from "fs"
 import * as path from "path"
 
-const getBaseDir = () => {
-    if (typeof __dirname !== "undefined") {
-        return __dirname
-    }
-    try {
-        // `import.meta` is only legal in an ES module, but this package compiles
-        // with `module: Node16` and no `"type": "module"`, so TypeScript rejects it
-        // here even though the branch is guarded at runtime and only executes when
-        // `__dirname` is absent (i.e. under Medusa's ESM build). The alternative —
-        // dropping this branch — would break template resolution in the ESM build,
-        // so suppress it narrowly rather than changing runtime behaviour.
-        // @ts-expect-error -- import.meta is guarded above; see comment.
-        const fileUrl = import.meta.url
-        const pathname = new URL(fileUrl).pathname
-        return path.dirname(pathname.replace(/^\/([A-Za-z]:)/, "$1"))
-    } catch {
-        return process.cwd()
-    }
+function resolveBundledTemplatesDir(): string {
+    const candidates = [
+        ...(typeof __dirname === "string" ? [path.resolve(__dirname, "../../../../email_templates")] : []),
+        path.resolve(process.cwd(), "email_templates"),
+        path.resolve(process.cwd(), "packages/medusa-plugin-mailer/email_templates"),
+        path.resolve(process.cwd(), "node_modules/@sam-ael/medusa-plugin-mailer/email_templates"),
+    ]
+    return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0]
 }
 
-const BUNDLED_TEMPLATES_DIR = path.resolve(getBaseDir(), "../../../../email_templates")
+const BUNDLED_TEMPLATES_DIR = resolveBundledTemplatesDir()
 
 export function resolveTemplatesDir(): string {
     const envDir = process.env.MAILER_TEMPLATES_DIR

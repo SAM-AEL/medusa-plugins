@@ -1,4 +1,5 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
+import { MAILER_EVENTS } from "../../../../../shared/mailer-fields"
 import { invalidateMailerCache } from "../../../../../subscribers/mailer-event-handler"
 import {
     fail,
@@ -46,8 +47,8 @@ async function updateMapping(req: MedusaRequest, res: MedusaResponse) {
     }
 
     const VALID_RECIPIENT_TYPES = new Set(["customer_email", "order_email", "custom"])
-    if (typeof mergedData.event_name !== "string" || mergedData.event_name.length > 100) {
-        return fail(res, 400, "INVALID_EVENT", "event_name is invalid")
+    if (typeof mergedData.event_name !== "string" || mergedData.event_name.length > 100 || !MAILER_EVENTS.includes(mergedData.event_name)) {
+        return fail(res, 400, "INVALID_EVENT", "event_name is not a supported mailer event")
     }
     if (typeof mergedData.template_name !== "string" || mergedData.template_name.length > 128 || mergedData.template_name.includes("..") || mergedData.template_name.includes("/")) {
         return fail(res, 400, "INVALID_TEMPLATE", "template_name is invalid")

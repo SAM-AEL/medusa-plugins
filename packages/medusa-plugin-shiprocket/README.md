@@ -155,14 +155,14 @@ Configure your Shiprocket dashboard to deliver scan updates to:
 |---|---|---|---|
 | `POST` | `/admin/shiprocket/tracking/:awb/sync` | Admin Session | Forces on-demand synchronization of an AWB's status from Shiprocket API. |
 | `GET` | `/admin/shiprocket/tracking/:awb` | Admin Session | Retrieves tracking timeline and shipment metadata for an AWB. |
-| `GET` | `/store/shiprocket/tracking/:awb` | Public / Rate-Limited | Customer-facing endpoint for retrieving tracking timeline by AWB. Scoped to authenticated customer if logged in. |
+| `GET` | `/store/shiprocket/tracking/:awb` | Authenticated customer (ownership-verified) | Returns the tracking timeline only when the caller owns the linked order. Guest, unlinked, and deleted orders fail closed with 403/404. |
 
 ---
 
 ## Security & Production Hardening
 
 - **Webhook Brute-Force Protection:** The unauthenticated `/hooks/fulfillment/delivery-updates` endpoint is rate limited per client (20 requests/minute) and rejects any `SHIPROCKET_WEBHOOK_TOKEN` shorter than 32 characters. Token comparison uses `crypto.timingSafeEqual`.
-- **AWB Sanitization:** AWB parameters are validated against strict alphanumeric patterns (`/^[a-zA-Z0-9_-]{4,50}$/`), mitigating injection vulnerabilities.
+- **AWB Sanitization:** AWB parameters are validated against strict alphanumeric patterns (`/^[A-Za-z0-9-]{6,40}$/`), mitigating injection vulnerabilities.
 - **Sliding-Window Public Rate Limiting:** The public `/store/shiprocket/delivery-estimate` route enforces a sliding-window rate limit per client IP (respecting `x-forwarded-for` and proxy hops), defending against scraping and denial-of-service attempts.
 - **Webhook Deduplication:** Incoming scans are deduplicated using a compound signature (`${awb}:${current_status_id}:${current_timestamp}`), preventing duplicate status updates.
 - **Credential Segregation:** Shiprocket authentication tokens are generated and cached in memory; passwords and bearer tokens are never exposed in administrative API responses.

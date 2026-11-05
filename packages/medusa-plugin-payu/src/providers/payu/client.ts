@@ -222,7 +222,7 @@ export class PayuClient {
         try {
             return JSON.parse(text) as PayuVerifyResponse
         } catch {
-            throw new Error(`PayU non-JSON response on ${command}: ${text.slice(0, 200)}`)
+            throw new Error(`PayU non-JSON response on ${command}`)
         }
     }
 
@@ -260,7 +260,7 @@ export class PayuClient {
         try {
             return JSON.parse(text) as PayuRefundResponse
         } catch {
-            throw new Error(`PayU non-JSON response on ${command}: ${text.slice(0, 200)}`)
+            throw new Error(`PayU non-JSON response on ${command}`)
         }
     }
 }

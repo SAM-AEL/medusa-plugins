@@ -50,7 +50,7 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
     const manifestUrl = (fetchedDocs?.manifest_url || shiprocketFulfillment?.data?.manifest_url) as string
 
     const trackingUrl = (label?.tracking_url ||
-        (awb ? `https://shiprocket.co/tracking/${awb}` : null)) as string
+        (awb ? `https://shiprocket.co/tracking/${encodeURIComponent(awb)}` : null)) as string
     const courierName = shiprocketFulfillment?.data?.courier_name as string
 
     // Fetch tracking on mount if AWB is present
@@ -454,7 +454,7 @@ const ShiprocketDocumentsWidget = ({ data }: DetailWidgetProps<AdminOrder>) => {
 }
 
 const DocumentButton = ({ href, label, icon, bg, hoverBorder }: { href?: string, label: string, icon: React.ReactNode, bg: string, hoverBorder: string }) => {
-    const isAvailable = !!href && (href.startsWith("https://") || href.startsWith("http://"))
+    const isAvailable = !!href && href.startsWith("https://")
     const safeHref = isAvailable ? href : "#"
     return (
         <a

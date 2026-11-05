@@ -128,14 +128,18 @@ The plugin listens for the following Medusa events:
 
 | Event Name | Trigger | Discord Action |
 |---|---|---|
-| `order.placed` | New customer order created | Posts a new embed message and records the Discord message ID. |
-| `order.fulfillment_created` | Items fulfilled in warehouse | Edits existing order embed with fulfillment progress. |
-| `fulfillment.shipment_created` | Carrier tracking details assigned | Edits order embed to include carrier, tracking number, and URL. |
-| `order.completed` | Order marked as completed | Edits order embed to completed status (green). |
-| `order.canceled` | Order canceled | Edits order embed to canceled status (red). |
-| `order.updated` | Order details modified | Edits order embed with updated information. |
-| `customer.created` | New customer registration | Posts a new welcome notification to mapped channel. |
-| `customer.updated` | Customer profile updated | Posts an account update notification. |
+| `order.placed` | New order created | Posts an embed and records the Discord message ID. |
+| `order.fulfillment_created` | Items fulfilled | Edits the existing order embed with fulfillment progress. |
+| `fulfillment.created` | Fulfillment created | Edits the existing order embed with fulfillment progress. |
+| `fulfillment.shipment_created` | Shipment created | Edits the order embed with tracking details. |
+| `shipment.created` | Shipment created | Edits the order embed with tracking details. |
+| `order.completed` | Order completed | Edits the order embed to completed status. |
+| `order.canceled` | Order canceled | Edits the order embed to canceled status. |
+| `order.updated` | Order updated | Edits the order embed with current order information. |
+| `payment.captured` | Payment captured | Edits the order embed with captured payment status. |
+| `payment.refunded` | Payment refunded | Edits the order embed with refunded payment status. |
+| `customer.created` | Customer created | Posts a notification to the mapped channel. |
+| `customer.updated` | Customer updated | Posts a notification to the mapped channel. |
 
 ### Admin API Endpoints
 
@@ -143,11 +147,13 @@ All admin endpoints require an authenticated Medusa admin user session.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/admin/discord/mappings` | List all configured webhook mappings. |
-| `POST` | `/admin/discord/mappings` | Create a new webhook mapping (validated against a Discord webhook URL allowlist). |
-| `POST` | `/admin/discord/mappings/:id` | Update an existing webhook mapping. |
+| `GET` | `/admin/discord/mappings` | List mappings. Webhook URLs are never returned — only `masked_url` (`…last4` of the token). |
+| `POST` | `/admin/discord/mappings` | Create a mapping. `event_name` must be a supported event; new mappings start **inactive** until verified. |
+| `POST` | `/admin/discord/mappings/:id` | Update a mapping. The stored webhook URL is hidden — re-enter it to save changes. |
 | `DELETE` | `/admin/discord/mappings/:id` | Delete a webhook mapping. |
-| `POST` | `/admin/discord/test` | Dispatch a test notification with synthetic order data to verify webhook connectivity. |
+| `POST` | `/admin/discord/verify` | Dispatch a test ping with synthetic order data (rate-limited: 5/min per mapping). |
+
+> **2.0.0 breaking:** `GET` no longer returns `webhook_url` (only `masked_url`); edits require re-entering the URL; new mappings start inactive; only a successful `POST /admin/discord/verify` enables a mapping. Direct activation and unsupported event names are rejected with 400.
 
 #### Create Mapping Request Payload Example
 
@@ -181,7 +187,9 @@ The following tokens can be used in the `message_template` field:
 
 - **Mention Hijacking Defense:** Customer-submitted data (names, notes, addresses) is sanitized to neutralize `@everyone`, `@here`, `<@...>`, and `<@&...>` mentions, preventing malicious users from tagging channel members.
 - **Webhook URL Protocol Validation:** Webhook targets are strictly validated against `https://discord.com/api/webhooks/` (or `https://discordapp.com/api/webhooks/`), rejecting insecure HTTP schemes and arbitrary external URLs.
-- **Input Validation:** All admin API endpoints validate request payloads inline. Webhook URLs are checked against an allowlist that only permits `https://discord.com/api/webhooks/{id}/{token}` (and the legacy `discordapp.com` host), which blocks SSRF via arbitrary URLs.
+- **Input Validation:** All admin API endpoints validate request payloads inline. Webhook URLs are checked against an allowlist that only permits `https://discord.com/api/webhooks/{id}/{token}` (and the legacy `discordapp.com` host), which blocks SSRF via arbitrary URLs. Stored bearer tokens are never returned via the API (masked reads, re-entry on edit), and new mappings start inactive until `POST /verify` succeeds.
+- **PII Minimization:** Default order/customer embeds redact name, email, and phone. Set `DISCORD_INCLUDE_PII=true` to opt in — only do this for private staff channels, since Discord messages persist outside your data-retention controls.
+- **HTTPS-only Links:** Tracking, thumbnail, and avatar URLs must be `https:`; markdown link targets are escaped; custom embeds are length-capped.
 - **Dual Error Envelope Normalization:** The Admin UI extension handles both structured API errors (`{ message, error, code }`) and Medusa framework errors (`{ type, message }`) with graceful fallback messages.
 - **Database Index Optimization:** Composite indexes (`idx_discord_order_msg_lookup`, `idx_discord_order_msg_webhook_url`, `idx_discord_mapping_webhook_url`) optimize message lookup performance under high order volume.
 

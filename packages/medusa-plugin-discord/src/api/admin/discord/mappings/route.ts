@@ -1,7 +1,7 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { DISCORD_NOTIFICATION_MODULE } from "../../../../modules/discord-notification"
-import { ok, fail, parsePagination } from "../../../../shared/http"
-import { normalizeWebhookUrl, isValidWebhookUrl } from "../../../../shared/discord-fields"
+import { ok, fail, parsePagination, toSafeMapping } from "../../../../shared/http"
+import { normalizeWebhookUrl, isValidWebhookUrl, isSupportedDiscordEvent } from "../../../../shared/discord-fields"
 
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
     const discordSvc = req.scope.resolve(DISCORD_NOTIFICATION_MODULE)
@@ -16,7 +16,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
         }
     )
 
-    return ok(res, { mappings, count })
+    return ok(res, { mappings: (mappings || []).map(toSafeMapping), count })
 }
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
@@ -29,8 +29,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         return fail(res, 400, "INVALID_PAYLOAD", "event_name and webhook_url are required")
     }
 
-    if (typeof event_name !== "string" || event_name.length > 100) {
-        return fail(res, 400, "INVALID_EVENT", "event_name must be a string up to 100 chars")
+    if (typeof event_name !== "string" || event_name.length > 100 || !isSupportedDiscordEvent(event_name)) {
+        return fail(res, 400, "INVALID_EVENT", "event_name is not a supported Discord event")
     }
 
     const normalizedUrl = normalizeWebhookUrl(webhook_url)
@@ -47,15 +47,21 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     if (typeof channel_name === "string" && channel_name.length > 100) {
         return fail(res, 400, "INVALID_CHANNEL", "channel_name must be 100 chars or fewer")
     }
+    if (is_active !== undefined && !(typeof is_active === "boolean" || is_active === "true" || is_active === "false")) {
+        return fail(res, 400, "INVALID_ACTIVE", "is_active must be a boolean")
+    }
+    if (is_active === true || is_active === "true") {
+        return fail(res, 400, "VERIFY_REQUIRED", "Test the webhook successfully before enabling this mapping")
+    }
 
     const mapping = await (discordSvc as any).createDiscordWebhookMappings({
         event_name,
         webhook_url: normalizedUrl,
         channel_name: channel_name || null,
-        is_active: is_active !== undefined ? is_active : true,
+        is_active: is_active === undefined ? false : is_active === true || is_active === "true",
         message_template: message_template || null,
         bot_name: bot_name || null,
     })
 
-    return ok(res, { mapping }, 201)
+    return ok(res, { mapping: toSafeMapping(mapping) }, 201)
 }
